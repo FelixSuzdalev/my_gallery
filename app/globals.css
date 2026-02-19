@@ -1,0 +1,264 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+@layer components {
+  @keyframes floatY {
+    0% { transform: translateY(0) scale(1); }
+    50% { transform: translateY(-12px) scale(1.02); }
+    100% { transform: translateY(0) scale(1); }
+  }
+  @keyframes slowRotate {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  .float {
+    animation: floatY 6s ease-in-out infinite;
+  }
+
+  .float-slow { animation-duration: 9s; }
+  .float-fast { animation-duration: 4.5s; }
+
+  .blur-blob {
+    filter: blur(28px);
+    opacity: 0.8;
+    mix-blend-mode: screen;
+  }
+
+  /* subtle glass shimmer */
+  .shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(90deg, rgba(255,255,255,0.02), rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+    transform: translateX(-100%);
+    transition: transform 1.6s ease-in-out;
+  }
+  .shimmer:hover::after { transform: translateX(0%); }
+}
+
+/* === HERO ANIMATION === */
+
+@keyframes gradientMove {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes textReveal {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animated-gradient {
+  background: linear-gradient(
+    -45deg,
+    #0f172a,
+    #1e293b,
+    #0f172a,
+    #111827
+  );
+  background-size: 400% 400%;
+  animation: gradientMove 15s ease infinite;
+}
+
+.reveal {
+  animation: textReveal 1.2s cubic-bezier(.22,1,.36,1) forwards;
+}
+
+/* HERO helpers */
+@keyframes heroGradient {
+  0% { background-position: 0% 50% }
+  50% { background-position: 100% 50% }
+  100% { background-position: 0% 50% }
+}
+
+.animate-hero-gradient {
+  background-size: 200% 200%;
+  animation: heroGradient 18s ease infinite;
+}
+
+/* prefer reduced motion: stop heavy animations */
+@media (prefers-reduced-motion: reduce) {
+  .animate-hero-gradient,
+  .animate-bounce {
+    animation: none !important;
+  }
+  canvas { display: none !important; }
+}
+
+/* small performance-friendly fallback for mobile */
+@media (max-width: 768px) {
+  canvas { display: none; }
+}
+
+/* === HERO: animated gradient + noise + helpers === */
+
+root{
+  --hero-gradient-1: #05060a;
+  --hero-gradient-2: #0c0f18;
+  --hero-accent: rgba(255,255,255,0.04);
+  --px: 0; /* mouse X (-0.5 .. 0.5) */
+  --py: 0; /* mouse Y (-0.5 .. 0.5) */
+}
+
+/* -------- Global helpers -------- */
+.hero-shell {
+  background: linear-gradient(120deg, var(--hero-gradient-1) 0%, var(--hero-gradient-2) 100%);
+  background-size: 200% 200%;
+  /* subtle slow shift */
+  animation: _gShift 18s ease-in-out infinite;
+  color: #fff;
+}
+
+@keyframes _gShift {
+  0% { background-position: 0% 40% }
+  50% { background-position: 100% 60% }
+  100% { background-position: 0% 40% }
+}
+
+/* Noise overlay variable (optional; small svg data URI can be set here) */
+:root { --noise: none; } /* set to data URI if you want noise */
+
+/* -------- Headline reveal (stagger friendly) -------- */
+.hero-headline .word {
+  display:block;
+  transform: translateY(28px);
+  opacity: 0;
+}
+.hero-headline .word.revealed{
+  transform: translateY(0);
+  opacity: 1;
+  transition: transform 680ms cubic-bezier(.2,.9,.3,1), opacity 680ms ease;
+}
+
+/* -------- Parallax layers (driven by --px / --py) -------- */
+.parallax { transform: translate3d(calc(var(--px) * 20px), calc(var(--py) * 12px), 0); transition: transform 120ms linear; }
+.parallax.depth-2 { transform: translate3d(calc(var(--px) * 10px), calc(var(--py) * 6px), 0); }
+.parallax.depth-3 { transform: translate3d(calc(var(--px) * 4px), calc(var(--py) * 2px), 0); }
+
+/* -------- Decorative blobs (soft colored lights) -------- */
+.blob {
+  position: absolute;
+  pointer-events: none;
+  filter: blur(36px);
+  mix-blend-mode: screen;
+  opacity: 0.6;
+  will-change: transform, opacity;
+}
+
+/* Example blob sizes are set inline in component (width/height/background) */
+
+/* -------- Large background word (ARCHIVE) -------- */
+.big-bg-word {
+  pointer-events: none;
+  user-select: none;
+  opacity: 0.06;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+/* -------- Preview thumbnails & hero cards -------- */
+.preview-strip, .preview-marquee { display:flex; gap:12px; align-items:center; overflow:hidden; }
+
+.preview-thumb, .hero-card {
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(2,6,23,0.35);
+  transition: transform .42s cubic-bezier(.2,.9,.3,1), filter .42s, box-shadow .42s;
+  will-change: transform, filter;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+}
+.preview-thumb img, .hero-card img, .collection-card img {
+  width:100%;
+  height:100%;
+  object-fit: cover;
+  display:block;
+}
+
+/* hover micro interactions */
+.preview-thumb:hover, .hero-card:hover {
+  transform: translateY(-8px) scale(1.04);
+  filter: saturate(1.06) contrast(1.02);
+  box-shadow: 0 24px 56px rgba(2,6,23,0.55);
+}
+
+/* collection card container */
+.collection-card {
+  border-radius:12px;
+  padding:12px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  box-shadow: 0 10px 30px rgba(2,6,23,0.28);
+  transition: transform .36s, box-shadow .36s;
+}
+.collection-card:hover { transform: translateY(-8px); }
+
+/* -------- CTA helpers -------- */
+.btn-primary {
+  background: #fff;
+  color: #04112b;
+  padding: .72rem 1.1rem;
+  border-radius: 999px;
+  font-weight: 600;
+  box-shadow: 0 10px 24px rgba(2,6,23,0.25);
+}
+.btn-ghost {
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #fff;
+  padding: .62rem .9rem;
+  border-radius: 999px;
+}
+
+/* -------- Marquee (simple) -------- */
+.marquee { overflow:hidden; background: linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.015)); }
+
+/* -------- Reduced motion & mobile fallbacks -------- */
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+  .big-bg-word { opacity: 0.02 !important; }
+}
+
+@media (max-width: 900px) {
+  .hero-card { display: none; }
+  .big-bg-word { font-size: 6rem !important; opacity: 0.02; }
+  .preview-thumb { width: 120px; height: 80px; }
+}
+
+/* -------- small utility (noise overlay if needed) -------- */
+.hero-noise {
+  background-image: var(--noise);
+  mix-blend-mode: overlay;
+  opacity: 0.04;
+  pointer-events: none;
+}
