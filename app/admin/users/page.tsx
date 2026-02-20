@@ -1,23 +1,22 @@
+// app/admin/users/page.tsx
 'use client'
 import React, { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import AuthorForm from '@/components/admin/AuthorForm'
-import SelectUserModal from '@/components/admin/SelectUserModal'
 
-type Profile = {
-  id: string
-  full_name?: string
-  username?: string
-  avatar_url?: string
-  role?: string
+type Profile = { 
+  id: string; 
+  full_name?: string; 
+  username?: string; 
+  avatar_url?: string;
+  role?: string;
 }
 
-export default function AdminCreatorsPage() {
+export default function AdminUsersPage() {
   const [items, setItems] = useState<Profile[]>([])
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState<Profile | null>(null)
   const [showForm, setShowForm] = useState(false)
-  const [showSelectModal, setShowSelectModal] = useState(false)
 
   useEffect(() => {
     load()
@@ -28,7 +27,7 @@ export default function AdminCreatorsPage() {
     const { data, error } = await supabase
       .from('profiles')
       .select('id, full_name, username, avatar_url, role')
-      .eq('role', 'creator')
+      .eq('role', 'user')  // только пользователи
       .order('full_name')
     if (error) {
       alert('Ошибка: ' + error.message)
@@ -39,7 +38,7 @@ export default function AdminCreatorsPage() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm('Удалить создателя? Это удалит и все связанные работы (cascade).')) return
+    if (!confirm('Удалить пользователя? Это удалит и все связанные работы (если они есть).')) return
     const { error } = await supabase.from('profiles').delete().eq('id', id)
     if (error) {
       alert('Ошибка удаления: ' + error.message)
@@ -48,30 +47,16 @@ export default function AdminCreatorsPage() {
     }
   }
 
-  async function handleAssignCreators(selectedIds: string[]) {
-    // Обновляем роли выбранных пользователей на 'creator'
-    const { error } = await supabase
-      .from('profiles')
-      .update({ role: 'creator' })
-      .in('id', selectedIds)
-
-    if (error) {
-      alert('Ошибка назначения: ' + error.message)
-    } else {
-      setShowSelectModal(false)
-      await load() // перезагружаем список создателей
-    }
-  }
-
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-500">Создатели</h1>
-        <button
-          onClick={() => setShowSelectModal(true)}
+        <h1 className="text-2xl font-bold text-gray-500">Пользователи</h1>
+        {/* Кнопка добавления — если хочешь, можешь скрыть или заменить на приглашение */}
+        <button 
+          onClick={() => { setEditing(null); setShowForm(true) }} 
           className="bg-green-600 text-white px-4 py-2 rounded"
         >
-          Назначить создателя
+          Добавить пользователя
         </button>
       </div>
 
@@ -93,14 +78,14 @@ export default function AdminCreatorsPage() {
               </div>
 
               <div className="mt-3 flex gap-2">
-                <button
-                  onClick={() => { setEditing(profile); setShowForm(true) }}
+                <button 
+                  onClick={() => { setEditing(profile); setShowForm(true) }} 
                   className="px-3 py-1 bg-blue-50 text-blue-700 rounded"
                 >
                   Редактировать
                 </button>
-                <button
-                  onClick={() => handleDelete(profile.id)}
+                <button 
+                  onClick={() => handleDelete(profile.id)} 
                   className="px-3 py-1 bg-red-50 text-red-700 rounded"
                 >
                   Удалить
@@ -111,7 +96,6 @@ export default function AdminCreatorsPage() {
         </div>
       )}
 
-      {/* Модалка редактирования профиля (AuthorForm) */}
       {showForm && (
         <div className="fixed inset-0 bg-black/40 flex items-start justify-center p-6 z-50 overflow-auto">
           <div className="bg-white rounded-lg shadow max-w-xl w-full p-6">
@@ -124,14 +108,6 @@ export default function AdminCreatorsPage() {
             />
           </div>
         </div>
-      )}
-
-      {/* Модалка выбора пользователей для назначения создателями */}
-      {showSelectModal && (
-        <SelectUserModal
-          onClose={() => setShowSelectModal(false)}
-          onConfirm={handleAssignCreators}
-        />
       )}
     </div>
   )

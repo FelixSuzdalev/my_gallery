@@ -124,7 +124,7 @@ export default function LoginPage() {
               {state.isLogin ? 'С возвращением' : 'Создать аккаунт'}
             </h1>
             <p className="text-slate-800 text-xs mt-2 uppercase tracking-wide">
-              {state.isLogin ? 'Войдите в систему' : 'Присоединяйтесь к сообществу'}
+              {state.isLogin ? 'Войдите в систему Admin: felixsuzdalev@yandex.ru Пароль: ~9db.-GY@embhM5'  : 'Присоединяйтесь к сообществу'}
             </p>
           </div>
 

@@ -1,20 +1,9 @@
+// components/FeedFilters.tsx
 'use client'
 import React, { useEffect, useRef, useState } from 'react'
 import { Search, SlidersHorizontal, ChevronDown, X } from 'lucide-react'
 import { SortByEnum } from '@/app/core/models/types'
 
-/**
- * Props:
- * - activeTag, setActiveTag: (совместимо с текущим кодом) single tag mode
- * - setSearchQuery: вызывается с задержкой (debounce)
- * - sortBy, setSortBy: используют SortByEnum
- * - totalResults: просто для показа
- *
- * Доп. (опционально):
- * - multiSelect: если true и вы передали setActiveTags, компонент работает в multi-select режиме
- * - setActiveTags: (tags: string[]) => void — вызывается в multi-select режиме
- * - tagCounts: Record<tag, number> — если хочешь показывать кол-во в скобках у тега
- */
 interface Props {
   activeTag: string;
   setActiveTag: (tag: string) => void;
@@ -28,6 +17,14 @@ interface Props {
   setActiveTags?: (tags: string[]) => void;
   tagCounts?: Record<string, number>;
   showClear?: boolean; // показать кнопку "Сбросить"
+
+  // NEW: уведомляем родителя о текущих фильтрах (совместимо, опционально)
+  onFiltersChange?: (filters: {
+    tag: string;
+    tags?: string[]; // when multiSelect
+    search: string;
+    sortBy: SortByEnum;
+  }) => void;
 }
 
 const TAGS = ['Все', 'Фотография', 'Digital', 'Минимализм', '3D', 'Архитектура', 'Портрет', 'Street Art']
@@ -42,7 +39,8 @@ export default function FeedFilters({
   multiSelect = false,
   setActiveTags,
   tagCounts,
-  showClear = true
+  showClear = true,
+  onFiltersChange
 }: Props) {
   const [showTags, setShowTags] = useState(false)
   const [query, setQuery] = useState('')
@@ -53,17 +51,28 @@ export default function FeedFilters({
 
   // keep local controlled select value in sync if parent changes sortBy externally
   useEffect(() => {
-    // nothing to do — select uses sortBy directly
+    // select uses sortBy directly — no local mirror needed
   }, [sortBy])
 
-  // Debounce search input before calling parent setSearchQuery
+  // Debounce search input before calling parent setSearchQuery and notify onFiltersChange
   useEffect(() => {
     if (debounceRef.current) {
       window.clearTimeout(debounceRef.current)
     }
     // delay 300ms
     debounceRef.current = window.setTimeout(() => {
-      setSearchQuery(query.trim())
+      const trimmed = query.trim()
+      setSearchQuery(trimmed)
+
+      // notify parent about current filters (single source of truth for filters)
+      if (onFiltersChange) {
+        onFiltersChange({
+          tag: multiSelect ? 'Множественный' : activeTag,
+          tags: multiSelect ? selectedTags : undefined,
+          search: trimmed,
+          sortBy
+        })
+      }
     }, 300)
 
     return () => {
@@ -73,6 +82,19 @@ export default function FeedFilters({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query])
+
+  // Also call onFiltersChange whenever tag(s) or sortBy change
+  useEffect(() => {
+    if (!onFiltersChange) return
+    onFiltersChange({
+      tag: multiSelect ? (selectedTags.length === 1 ? selectedTags[0] : 'Множественный') : activeTag,
+      tags: multiSelect ? selectedTags : undefined,
+      search: query.trim(),
+      sortBy
+    })
+    // intentionally depend on activeTag/selectedTags/sortBy/query
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTag, selectedTags, sortBy])
 
   // helper: clear filters
   function clearFilters() {
@@ -85,6 +107,16 @@ export default function FeedFilters({
     } else {
       setActiveTag('Все')
     }
+
+    // notify parent
+    if (onFiltersChange) {
+      onFiltersChange({
+        tag: multiSelect ? 'Множественный' : 'Все',
+        tags: multiSelect ? [] : undefined,
+        search: '',
+        sortBy
+      })
+    }
   }
 
   // handle tag click (single or multi mode)
@@ -94,17 +126,34 @@ export default function FeedFilters({
       setSelectedTags(prev => {
         const exists = prev.includes(tag)
         const next = exists ? prev.filter(t => t !== tag) : [...prev, tag]
+
         // if user selected 'Все' in multi mode, interpret as clearing all
         if (tag === 'Все') {
           setActiveTags([])
+          // notify parent
+          if (onFiltersChange) {
+            onFiltersChange({ tag: 'Множественный', tags: [], search: query.trim(), sortBy })
+          }
           return []
         }
+
         setActiveTags(next)
+
+        // notify parent
+        if (onFiltersChange) {
+          onFiltersChange({ tag: 'Множественный', tags: next, search: query.trim(), sortBy })
+        }
+
         return next
       })
     } else {
       // single-select mode uses setActiveTag (backward compatible)
       setActiveTag(tag)
+
+      // notify parent (parent already gets activeTag via prop change effect above, but call explicitly to be immediate)
+      if (onFiltersChange) {
+        onFiltersChange({ tag, search: query.trim(), sortBy })
+      }
       // close tags panel optionally
       // setShowTags(false)
     }
@@ -130,12 +179,12 @@ export default function FeedFilters({
               onChange={(e) => setQuery(e.target.value)}
               type="text"
               placeholder="Поиск идей, авторов, тегов..."
-              className="w-full bg-gray-100 hover:bg-gray-200 focus:bg-white border-none rounded-full py-3 pl-12 pr-6 text-sm transition-all outline-none focus:ring-2 focus:ring-black"
+              className="w-full bg-gray-100 hover:bg-gray-200 focus:bg-white border-none rounded-full py-3 pl-12 pr-6 text-sm text-black placeholder-gray-400 transition-all outline-none focus:ring-2 focus:ring-black"
               aria-label="Поиск по сайту"
             />
             {query && (
               <button
-                onClick={() => { setQuery(''); setSearchQuery('') }}
+                onClick={() => { setQuery(''); setSearchQuery(''); if (onFiltersChange) onFiltersChange({ tag: activeTag, tags: selectedTags, search: '', sortBy }) }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-full text-gray-500 hover:bg-gray-100"
                 aria-label="Очистить поиск"
               >
@@ -166,11 +215,19 @@ export default function FeedFilters({
                 id="sort-select"
                 value={sortBy}
                 onChange={(e) => {
-                  // e.target.value is string but SortByEnum is string enum — TypeScript ok if cast safely
                   const val = e.target.value as SortByEnum
                   setSortBy(val)
+                  // notify parent immediately
+                  if (onFiltersChange) {
+                    onFiltersChange({
+                      tag: multiSelect ? 'Множественный' : activeTag,
+                      tags: multiSelect ? selectedTags : undefined,
+                      search: query.trim(),
+                      sortBy: val
+                    })
+                  }
                 }}
-                className="appearance-none bg-transparent pl-4 pr-10 py-2 text-xs font-bold uppercase tracking-widest cursor-pointer outline-none hover:bg-gray-100 rounded-lg transition-all"
+                className="appearance-none bg-transparent pl-4 pr-10 py-2 text-xs font-bold uppercase tracking-widest text-slate-800 cursor-pointer outline-none  hover:bg-gray-100 rounded-lg transition-all"
                 aria-label="Сортировать"
               >
                 <option value={SortByEnum.Newest}>Сначала новые</option>
@@ -217,7 +274,7 @@ export default function FeedFilters({
                 >
                   <span>{tag}</span>
                   {count !== null && (
-                    <span className="text-xs text-gray-300">{count}</span>
+                    <span className="text-xs text-gray-500">{count}</span>
                   )}
                 </button>
               )

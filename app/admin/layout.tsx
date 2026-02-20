@@ -39,11 +39,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b py-4">
         <div className="max-w-[1200px] mx-auto px-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Admin Panel</h2>
+          <h2 className="text-lg font-semibold text-gray-500">Admin Panel</h2>
           <nav className="flex gap-3">
-            <a href="/admin" className="text-sm px-3 py-1 rounded hover:bg-gray-100">Dashboard</a>
-            <a href="/admin/artworks" className="text-sm px-3 py-1 rounded hover:bg-gray-100">Artworks</a>
-            <a href="/admin/authors" className="text-sm px-3 py-1 rounded hover:bg-gray-100">Authors</a>
+            <a href="/admin" className="text-sm px-3 py-1 rounded text-gray-500 hover:bg-gray-100">Dashboard</a>
+            <a href="/admin/artworks" className="text-sm px-3 py-1 rounded text-gray-500 hover:bg-gray-100">Работы</a>
+            <a href="/admin/authors" className="text-sm px-3 py-1 rounded  text-gray-500 hover:bg-gray-100">Авторы</a>
+            <a href="/admin/users" className="text-sm px-3 py-1 rounded  text-gray-500 hover:bg-gray-100">Пользователи</a>
           </nav>
         </div>
       </header>

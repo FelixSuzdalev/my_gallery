@@ -52,9 +52,8 @@ export default function FavoritesPage() {
       setProfile(prof);
 
       // 3) получить favorites - если admin то все, иначе только свои
-      const favQuery = supabase.from('favorites').select('id, user_id, artwork_id'); // убрали created_at из select, т.к. его нет
-      const finalQuery = prof.role === 'admin' ? favQuery : favQuery.eq('user_id', uid);
-      const { data: favRows, error: favErr } = await finalQuery; // убрали .order(...)
+      const favQuery = supabase.from('favorites').select('id, user_id, artwork_id').eq('user_id', uid)
+      const { data: favRows, error: favErr } = await favQuery; // убрали .order(...)
 
       if (favErr) {
         if (!mounted) return;
