@@ -18,49 +18,48 @@ export default function ArtworkForm({ initial, onDone }: Props) {
   const [title, setTitle] = useState(initial?.title ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
   const [imageUrl, setImageUrl] = useState(initial?.image_url ?? '')
-  const [file, setFile] = useState<File | null>(null)
   const [authorId, setAuthorId] = useState(initial?.author_id ?? '')
   const [saving, setSaving] = useState(false)
   const [authors, setAuthors] = useState<Array<{ id: string; full_name?: string; username?: string }>>([])
 
+  // Загружаем только авторов с ролью creator
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from('profiles').select('id, full_name, username').order('full_name')
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, full_name, username')
+        .eq('role', 'creator')
+        .order('full_name')
       setAuthors(data || [])
     })()
   }, [])
-
-  async function uploadFile(file: File) {
-    const ext = file.name.split('.').pop()
-    const filename = `${crypto.randomUUID()}.${ext}`
-    const path = filename
-    const { data, error: uploadErr } = await supabase.storage.from('artworks').upload(path, file, { cacheControl: '3600', upsert: false })
-    if (uploadErr) throw uploadErr
-    const { data: publicData } = supabase.storage.from('artworks').getPublicUrl(path)
-    return publicData.publicUrl
-  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSaving(true)
     try {
-      let finalUrl = imageUrl
-      if (file) {
-        finalUrl = await uploadFile(file)
-        setImageUrl(finalUrl)
-      }
-
       if (initial?.id) {
-        // update
-        const { error } = await supabase.from('artworks').update({
-          title, description, image_url: finalUrl, author_id: authorId || null
-        }).eq('id', initial.id)
+        // обновление
+        const { error } = await supabase
+          .from('artworks')
+          .update({
+            title,
+            description,
+            image_url: imageUrl,
+            author_id: authorId || null
+          })
+          .eq('id', initial.id)
         if (error) throw error
       } else {
-        // insert
-        const { error } = await supabase.from('artworks').insert({
-          title, description, image_url: finalUrl, author_id: authorId || null
-        })
+        // создание
+        const { error } = await supabase
+          .from('artworks')
+          .insert({
+            title,
+            description,
+            image_url: imageUrl,
+            author_id: authorId || null
+          })
         if (error) throw error
       }
 
@@ -75,36 +74,79 @@ export default function ArtworkForm({ initial, onDone }: Props) {
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <label className="block text-xs font-semibold">Название</label>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} className="w-full border px-3 py-2 rounded" required />
+        <label className="block text-xs font-semibold text-gray-600">Название</label>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          className="w-full border px-3 py-2 rounded text-gray-800"
+          required
+        />
       </div>
 
       <div>
-        <label className="block text-xs font-semibold">Описание</label>
-        <textarea value={description} onChange={(e) => setDescription(e.target.value)} className="w-full border px-3 py-2 rounded" rows={3} />
+        <label className="block text-xs font-semibold text-gray-600">Описание</label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          className="w-full border px-3 py-2 rounded text-gray-800"
+          rows={3}
+        />
       </div>
 
       <div>
-        <label className="block text-xs font-semibold">Автор (привязка)</label>
-        <select value={authorId ?? ''} onChange={(e) => setAuthorId(e.target.value)} className="w-full border px-3 py-2 rounded">
+        <label className="block text-xs font-semibold text-gray-600">Автор</label>
+        <select
+          value={authorId ?? ''}
+          onChange={(e) => setAuthorId(e.target.value)}
+          className="w-full border px-3 py-2 rounded text-gray-800"
+        >
           <option value="">— без автора —</option>
-          {authors.map(a => <option key={a.id} value={a.id}>{a.full_name ?? a.username ?? a.id}</option>)}
+          {authors.map(a => (
+            <option key={a.id} value={a.id}>
+              {a.full_name ?? a.username ?? a.id}
+            </option>
+          ))}
         </select>
       </div>
 
       <div>
-        <label className="block text-xs font-semibold">Изображение</label>
-        <div className="flex items-center gap-3">
-          <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          {imageUrl && <img src={imageUrl} alt="preview" className="w-20 h-12 object-cover rounded" />}
-        </div>
+        <label className="block text-xs font-semibold text-gray-600">URL изображения</label>
+        <input
+          type="url"
+          value={imageUrl}
+          onChange={(e) => setImageUrl(e.target.value)}
+          className="w-full border px-3 py-2 rounded text-gray-800"
+          placeholder="https://example.com/image.jpg"
+          required
+        />
+        {imageUrl && (
+          <div className="mt-2">
+            <img
+              src={imageUrl}
+              alt="предпросмотр"
+              className="h-20 w-auto object-cover rounded border"
+              onError={(e) => (e.currentTarget.style.display = 'none')}
+            />
+          </div>
+        )}
       </div>
 
-      <div className="flex gap-2">
-        <button type="submit" disabled={saving} className="bg-green-600 text-white px-4 py-2 rounded">
-          {saving ? 'Сохраняю...' : initial?.id ? 'Сохранить' : 'Создать'}
+      <div className="flex gap-2 pt-2">
+        <button
+          type="submit"
+          disabled={saving}
+          className="bg-green-600 text-white px-4 py-2 rounded disabled:opacity-50"
+        >
+          {saving ? 'Сохранение...' : initial?.id ? 'Сохранить' : 'Создать'}
         </button>
-        <button type="button" onClick={() => { if (onDone) onDone(); }} className="px-4 py-2 rounded border">Отмена</button>
+        <button
+          type="button"
+          onClick={() => { if (onDone) onDone() }}
+          className="px-4 py-2 rounded border text-gray-700 hover:bg-gray-100"
+        >
+          Отмена
+        </button>
       </div>
     </form>
   )

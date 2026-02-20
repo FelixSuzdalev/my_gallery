@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase'
 import FeedFilters from '@/components/FeedFilters'
 import NagModal from '@/components/NagModal'
 import { SortByEnum } from '@/app/core/models/types'
+import { searchArtworks } from '@/lib/search' // <-- добавил импорт
 
 interface Artwork {
   id: string
@@ -18,7 +19,6 @@ interface Artwork {
     username?: string
     full_name?: string
   }
-  // ui-only
   liked?: boolean
 }
 
@@ -26,6 +26,7 @@ export default function FeedPage() {
   const [works, setWorks] = useState<Artwork[]>([])
   const [loading, setLoading] = useState(true)
 
+  // filter/sort state (controlled by FeedFilters)
   const [activeTag, setActiveTag] = useState('Все')
   const [searchQuery, setSearchQuery] = useState('')
   const [sortByEnum, setSortByEnum] = useState<SortByEnum>(SortByEnum.Newest)
@@ -41,127 +42,258 @@ export default function FeedPage() {
   // lightbox
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
 
-  useEffect(() => {
-    fetchArtworks()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-async function refreshCounts(artworkId: string) {
-  try {
-    const { count, error } = await supabase
-      .from('favorites')
-      .select('*', { count: 'exact', head: true })
-      .eq('artwork_id', artworkId) // 👈 ВОТ ЭТО ОБЯЗАТЕЛЬНО
-
-    if (error) {
-      console.warn('refreshCounts error:', error)
-      return
-    }
-
-    setCounts(c => ({
-      ...c,
-      [artworkId]: count ?? 0
-    }))
-  } catch (err) {
-    console.error('refreshCounts unexpected', err)
-  }
-}
-
-  async function fetchArtworks() {
+  // --- fetchArtworks: пробуем searchArtworks, а если пусто - делаем fallback fetch + client-side фильтр ---
+  async function fetchArtworks(filters?: { tag?: string; tags?: string[]; search?: string }) {
     setLoading(true)
     try {
-      // 1) get artworks with author profile
-      const { data: dataWorks, error: worksErr } = await supabase
-        .from('artworks')
-        .select(`
-          *,
-          profiles (
-            username,
-            full_name
-          )
-        `)
-        .order('created_at', { ascending: false })
+      console.debug('fetchArtworks called', { tag: filters?.tag, search: filters?.search, sortByEnum })
 
-      if (worksErr) {
-        console.error('Ошибка загрузки работ:', worksErr)
-        setWorks([])
-        setLoading(false)
-        return
+      const explicitTag = filters?.tag && filters.tag !== 'Все' ? filters.tag : undefined
+      const explicitTags = filters?.tags && filters.tags.length ? filters.tags : undefined
+      const search = filters?.search?.trim() ?? ''
+      const hasSearch = search.length > 0
+
+      // 1) Попытка использовать searchArtworks (тот код, что ты уже написал)
+      let res: any = null
+      try {
+        res = await searchArtworks({
+          q: hasSearch ? search : undefined,
+          tag: explicitTag,
+          tags: explicitTags,
+          sortBy: sortByEnum,
+          limit: 500
+        })
+        console.debug('searchArtworks returned', res?.artworks?.length ?? 0)
+      } catch (err) {
+        console.warn('searchArtworks failed, will fallback to client filtering', err)
+        res = null
       }
 
-      const worksArr = (dataWorks || []) as Artwork[]
-      const artworkIds = worksArr.map(w => w.id)
+      let artworks: Artwork[] = []
 
-      // 2) get favorites counts aggregated (single query returning many rows)
-      // We'll fetch all favorite rows for these artworkIds and count client-side
-      let countsMap: Record<string, number> = {}
-      if (artworkIds.length > 0) {
-        const { data: favRowsForCount, error: favCountErr } = await supabase
-          .from('favorites')
-          .select('artwork_id')
-          .in('artwork_id', artworkIds)
+      // 2) Если searchArtworks вернул данные — используем их
+      if (res && Array.isArray(res.artworks) && res.artworks.length > 0) {
+        artworks = (res.artworks || []).map((a: any) => ({
+          id: a.id,
+          title: a.title,
+          image_url: a.image_url,
+          tags: a.tags,
+          created_at: a.created_at,
+          author_id: a.author_id,
+          profiles: a.profiles,
+          liked: !!res.favMap?.[a.id]
+        } as Artwork))
+        // also ensure counts/favMap are available
+        setCounts(res.counts || {})
+        setFavMap(res.favMap || {})
+      } else {
+        // 3) FALLBACK: если ничего не вернулось — fetch all recent and фильтруем клиент-сайдом
+        console.debug('fallback: fetching artworks and filtering client-side')
+        const { data: dataWorks, error: worksErr } = await supabase
+          .from('artworks')
+          .select(`
+            *,
+            profiles (
+              username,
+              full_name
+            )
+          `)
+          .order('created_at', { ascending: false })
+          .limit(500)
 
-        if (favCountErr) {
-          console.warn('Не удалось загрузить counts для favorites:', favCountErr)
-          // fallback: zero counts
-          countsMap = {}
+        if (worksErr) {
+          console.error('Ошибка загрузки работ (fallback):', worksErr)
         } else {
-          countsMap = (favRowsForCount || []).reduce((acc: Record<string, number>, r: any) => {
-            acc[r.artwork_id] = (acc[r.artwork_id] || 0) + 1
-            return acc
-          }, {} as Record<string, number>)
+          const all = (dataWorks || []) as any[]
+
+          // client-side filter function
+          const searchLower = search.toLowerCase()
+          const tokens = hasSearch ? searchLower.split(/\s+/).filter(Boolean) : []
+
+          const matchesSearch = (item: any) => {
+            if (!hasSearch) return true
+            const title = (item.title || '').toLowerCase()
+            if (title.includes(searchLower)) return true
+            const uname = (item.profiles?.username || '').toLowerCase()
+            if (uname.includes(searchLower)) return true
+            const fullname = (item.profiles?.full_name || '').toLowerCase()
+            if (fullname.includes(searchLower)) return true
+            // tags exact token includes or tag contains token
+            const tagsArr: string[] = item.tags || []
+            for (const t of tagsArr) {
+              const tLower = (t || '').toLowerCase()
+              if (tLower.includes(searchLower)) return true
+              for (const tk of tokens) {
+                if (tLower.includes(tk)) return true
+              }
+            }
+            return false
+          }
+
+          const matchesTagFilter = (item: any) => {
+            if (explicitTag) {
+              const tagsArr: string[] = item.tags || []
+              return tagsArr.includes(explicitTag)
+            } else if (explicitTags) {
+              const tagsArr: string[] = item.tags || []
+              return explicitTags.some(t => tagsArr.includes(t))
+            }
+            return true
+          }
+
+          const filtered = all.filter(i => matchesSearch(i) && matchesTagFilter(i))
+          artworks = filtered.map((r: any) => ({
+            id: r.id,
+            title: r.title,
+            image_url: r.image_url,
+            tags: r.tags,
+            created_at: r.created_at,
+            author_id: r.author_id,
+            profiles: r.profiles,
+            liked: false
+          } as Artwork))
+
+          // We'll compute counts/favMap below from these artwork ids
         }
       }
 
-      // 3) try to get session & user favorites (to mark liked & build favMap)
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
-      if (sessionErr) console.warn('getSession warning:', sessionErr)
-      const userId = sessionData?.session?.user?.id ?? null
-
-      let likedSet = new Set<string>()
+      // 4) Теперь — если ещё не получили counts/favMap (например в fallback) — загрузим их
+      const artworkIds = artworks.map(w => w.id)
+      let countsMap: Record<string, number> = {}
       let favMapObj: Record<string, string> = {}
 
-      if (userId && artworkIds.length > 0) {
-        const { data: userFavRows, error: userFavErr } = await supabase
-          .from('favorites')
-          .select('artwork_id, id')
-          .eq('user_id', userId)
-          .in('artwork_id', artworkIds)
+      if (artworkIds.length > 0) {
+        // get all favorites for these artworks to compute counts
+        try {
+          const { data: favRowsForCount, error: favCountErr } = await supabase
+            .from('favorites')
+            .select('id, artwork_id, user_id')
+            .in('artwork_id', artworkIds)
 
-        if (userFavErr) {
-          console.warn('Не удалось получить favorites текущего пользователя:', userFavErr)
-        } else {
-          ;(userFavRows || []).forEach((r: any) => {
-            likedSet.add(r.artwork_id)
-            favMapObj[r.artwork_id] = r.id
-          })
+          if (favCountErr) {
+            console.warn('Не удалось загрузить counts для favorites:', favCountErr)
+          } else {
+            countsMap = (favRowsForCount || []).reduce((acc: Record<string, number>, r: any) => {
+              acc[r.artwork_id] = (acc[r.artwork_id] || 0) + 1
+              return acc
+            }, {} as Record<string, number>)
+          }
+        } catch (err) {
+          console.warn('favorites fetch failed', err)
+        }
+
+        // try to get session user favorites (to mark liked & build favMap)
+        try {
+          const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
+          if (sessionErr) console.warn('getSession warning:', sessionErr)
+          const userId = sessionData?.session?.user?.id ?? null
+
+          if (userId) {
+            const { data: userFavRows, error: userFavErr } = await supabase
+              .from('favorites')
+              .select('artwork_id, id')
+              .eq('user_id', userId)
+              .in('artwork_id', artworkIds)
+
+            if (userFavErr) {
+              console.warn('Не удалось получить favorites текущего пользователя:', userFavErr)
+            } else {
+              ;(userFavRows || []).forEach((r: any) => {
+                favMapObj[r.artwork_id] = r.id
+              })
+            }
+          }
+        } catch (err) {
+          console.warn('getSession or user favorites failed', err)
         }
       }
 
-      // 4) set states
+      // 5) Apply counts & liked flags
       setCounts(countsMap)
       setFavMap(favMapObj)
-
-      const mapped = worksArr.map(w => ({ ...w, liked: likedSet.has(w.id) }))
-      setWorks(mapped)
+      setWorks(artworks.map(w => ({ ...w, liked: !!favMapObj[w.id] })))
+      console.debug('final works length', artworks.length, 'counts keys', Object.keys(countsMap).length)
     } catch (err) {
       console.error('fetchArtworks unexpected error', err)
       setWorks([])
+      setCounts({})
+      setFavMap({})
     } finally {
       setLoading(false)
     }
   }
 
-  const processedWorks = useMemo(() => {
-    let filtered = works.filter(work => {
-      const matchesTag = activeTag === 'Все' || (work.tags ?? []).includes(activeTag)
-      const matchesSearch = work.title?.toLowerCase().includes(searchQuery.toLowerCase())
-      return matchesTag && matchesSearch
-    })
-    return filtered
-  }, [activeTag, searchQuery, works])
+  // Minimal onFiltersChange — sync parent state with filters from FeedFilters
+  const onFiltersChange = useCallback((filters: { tag: string; tags?: string[]; search: string; sortBy: SortByEnum }) => {
+    // keep parent state in sync — FeedFilters already calls setSearchQuery with debounce,
+    // but mirroring here ensures parent knows current filters immediately
+    if (typeof filters.search === 'string') setSearchQuery(filters.search)
+    if (filters.sortBy) setSortByEnum(filters.sortBy)
 
-  // lightbox handlers
+    if (filters.tag && filters.tag !== 'Все' && filters.tag !== 'Множественный') {
+      setActiveTag(filters.tag)
+    } else if (filters.tag === 'Все') {
+      setActiveTag('Все')
+    }
+    // Note: we intentionally do NOT call fetchArtworks directly here to avoid double requests
+    // because there's already an effect that triggers fetch when activeTag/searchQuery change.
+  }, [])
+
+  // initial load
+  useEffect(() => {
+    fetchArtworks()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Re-fetch whenever tag, search or sort changes (FeedFilters controls these states)
+  useEffect(() => {
+    const tagToSend = activeTag && activeTag !== 'Все' ? activeTag : undefined
+    fetchArtworks({ tag: tagToSend, search: searchQuery || undefined })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTag, searchQuery, sortByEnum])
+
+  // processedWorks: apply client-side filtering is redundant because we fetch filtered set,
+  // but we still apply final sorting here based on sortByEnum + counts
+  const processedWorks = useMemo(() => {
+    // create a shallow copy to avoid mutating state
+    const arr = [...works]
+
+    if (sortByEnum === SortByEnum.Newest) {
+      arr.sort((a, b) => (new Date(b.created_at ?? 0).getTime()) - (new Date(a.created_at ?? 0).getTime()))
+    } else if (sortByEnum === SortByEnum.Popular) {
+      arr.sort((a, b) => {
+        const cb = counts[b.id] ?? 0
+        const ca = counts[a.id] ?? 0
+        if (cb !== ca) return cb - ca
+        // tiebreaker: newest first
+        return (new Date(b.created_at ?? 0).getTime()) - (new Date(a.created_at ?? 0).getTime())
+      })
+    } else if (sortByEnum === SortByEnum.Trending) {
+      const MS_PER_DAY = 1000 * 60 * 60 * 24
+      const now = Date.now()
+      arr.sort((a, b) => {
+        const ca = counts[a.id] ?? 0
+        const cb = counts[b.id] ?? 0
+
+        const ta = a.created_at ? new Date(a.created_at).getTime() : now
+        const tb = b.created_at ? new Date(b.created_at).getTime() : now
+
+        const ageDaysA = Math.max(1, (now - ta) / MS_PER_DAY)
+        const ageDaysB = Math.max(1, (now - tb) / MS_PER_DAY)
+
+        const scoreA = ca / ageDaysA
+        const scoreB = cb / ageDaysB
+
+        if (scoreB !== scoreA) return scoreB - scoreA
+        if (cb !== ca) return cb - ca
+        return tb - ta
+      })
+    }
+
+    return arr
+  }, [works, sortByEnum, counts])
+
+  // lightbox handlers (unchanged)
   const openLightbox = useCallback((artworkId: string) => {
     const idx = processedWorks.findIndex(w => w.id === artworkId)
     if (idx >= 0) setLightboxIndex(idx)
@@ -185,7 +317,6 @@ async function refreshCounts(artworkId: string) {
     })
   }, [processedWorks.length])
 
-  // keyboard navigation
   useEffect(() => {
     if (lightboxIndex === null) return
     const onKey = (e: KeyboardEvent) => {
@@ -197,91 +328,109 @@ async function refreshCounts(artworkId: string) {
     return () => window.removeEventListener('keydown', onKey)
   }, [lightboxIndex, closeLightbox, showPrev, showNext])
 
-  // Toggle favorite: uses favMap for quick decisions and updates counts
-  // Заменить текущую реализацию toggleFavorite на эту версию
-const toggleFavorite = async (artworkId: string) => {
-  try {
-    setTogglingIds(s => ({ ...s, [artworkId]: true }))
+  // Toggle favorite (unchanged logic from your version)
+  const toggleFavorite = async (artworkId: string) => {
+    try {
+      setTogglingIds(s => ({ ...s, [artworkId]: true }))
 
-    const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
-    if (sessionErr) {
-      console.error('getSession error', sessionErr)
-      alert('Ошибка авторизации. Попробуйте перезайти.')
-      setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
-      return
-    }
-    const user = sessionData?.session?.user ?? null
-    if (!user) {
-      setShowNag(true)
-      setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
-      return
-    }
-
-    const existingFavId = favMap[artworkId]
-
-    if (existingFavId) {
-      // DELETE
-      const { error: delErr } = await supabase.from('favorites').delete().eq('id', existingFavId)
-      if (delErr) {
-        console.error('Error deleting favorite:', delErr)
-        alert('Не удалось удалить из избранного: ' + delErr.message)
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
+      if (sessionErr) {
+        console.error('getSession error', sessionErr)
+        alert('Ошибка авторизации. Попробуйте перезайти.')
+        setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
+        return
+      }
+      const user = sessionData?.session?.user ?? null
+      if (!user) {
+        setShowNag(true)
         setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
         return
       }
 
-      // синхронизируем счётчик из БД
-      await refreshCounts(artworkId)
+      const existingFavId = favMap[artworkId]
 
-      // обновляем локально favMap и liked-флаг
-      setFavMap(m => { const n = { ...m }; delete n[artworkId]; return n })
-      setWorks(ws => ws.map(w => w.id === artworkId ? { ...w, liked: false } : w))
-      setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
-      return
-    }
-
-    // INSERT
-    const { data: insertData, error: insertErr } = await supabase
-      .from('favorites')
-      .insert({ user_id: user.id, artwork_id: artworkId })
-      .select()
-      .single()
-
-    if (insertErr) {
-      console.error('Error inserting favorite:', insertErr)
-      const msg = String(insertErr.message || '')
-      if (insertErr.code === '23505' || msg.toLowerCase().includes('duplicate')) {
-        // гонка — перезагрузим favMap и counts из БД
-        const { data: refetchFav, error: refetchErr } = await supabase
-          .from('favorites')
-          .select('id, artwork_id')
-          .eq('user_id', user.id)
-          .eq('artwork_id', artworkId)
-          .maybeSingle()
-
-        if (!refetchErr && refetchFav?.id) {
-          setFavMap(f => ({ ...f, [artworkId]: refetchFav.id }))
+      if (existingFavId) {
+        // DELETE
+        const { error: delErr } = await supabase.from('favorites').delete().eq('id', existingFavId)
+        if (delErr) {
+          console.error('Error deleting favorite:', delErr)
+          alert('Не удалось удалить из избранного: ' + delErr.message)
+          setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
+          return
         }
+
         await refreshCounts(artworkId)
-        setWorks(ws => ws.map(w => w.id === artworkId ? { ...w, liked: true } : w))
-      } else {
-        alert('Не удалось добавить в избранное: ' + msg)
+
+        setFavMap(m => { const n = { ...m }; delete n[artworkId]; return n })
+        setWorks(ws => ws.map(w => w.id === artworkId ? { ...w, liked: false } : w))
+        setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
+        return
       }
+
+      // INSERT
+      const { data: insertData, error: insertErr } = await supabase
+        .from('favorites')
+        .insert({ user_id: user.id, artwork_id: artworkId })
+        .select()
+        .single()
+
+      if (insertErr) {
+        console.error('Error inserting favorite:', insertErr)
+        const msg = String(insertErr.message || '')
+        if (insertErr.code === '23505' || msg.toLowerCase().includes('duplicate')) {
+          // race — refetch
+          const { data: refetchFav, error: refetchErr } = await supabase
+            .from('favorites')
+            .select('id, artwork_id')
+            .eq('user_id', user.id)
+            .eq('artwork_id', artworkId)
+            .maybeSingle()
+
+          if (!refetchErr && refetchFav?.id) {
+            setFavMap(f => ({ ...f, [artworkId]: refetchFav.id }))
+          }
+          await refreshCounts(artworkId)
+          setWorks(ws => ws.map(w => w.id === artworkId ? { ...w, liked: true } : w))
+        } else {
+          alert('Не удалось добавить в избранное: ' + msg)
+        }
+        setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
+        return
+      }
+
+      setFavMap(f => ({ ...f, [artworkId]: insertData.id }))
+      await refreshCounts(artworkId)
+      setWorks(ws => ws.map(w => w.id === artworkId ? { ...w, liked: true } : w))
+
+    } catch (err) {
+      console.error('toggleFavorite unexpected error', err)
+      alert('Ошибка при переключении избранного: ' + String(err))
+    } finally {
       setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
-      return
     }
-
-    // success: используем реальный id и обновляем counts из БД
-    setFavMap(f => ({ ...f, [artworkId]: insertData.id }))
-    await refreshCounts(artworkId)
-    setWorks(ws => ws.map(w => w.id === artworkId ? { ...w, liked: true } : w))
-
-  } catch (err) {
-    console.error('toggleFavorite unexpected error', err)
-    alert('Ошибка при переключении избранного: ' + String(err))
-  } finally {
-    setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
   }
-}
+
+  // helper: refresh a single artwork's favorite count
+  async function refreshCounts(artworkId: string) {
+    try {
+      const { count, error } = await supabase
+        .from('favorites')
+        .select('*', { count: 'exact', head: true })
+        .eq('artwork_id', artworkId)
+
+      if (error) {
+        console.warn('refreshCounts error:', error)
+        return
+      }
+
+      setCounts(c => ({
+        ...c,
+        [artworkId]: count ?? 0
+      }))
+    } catch (err) {
+      console.error('refreshCounts unexpected', err)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-white">
@@ -292,6 +441,7 @@ const toggleFavorite = async (artworkId: string) => {
         sortBy={sortByEnum}
         setSortBy={setSortByEnum}
         totalResults={processedWorks.length}
+        onFiltersChange={onFiltersChange}
       />
 
       <div className="max-w-[1800px] mx-auto px-6 py-8">

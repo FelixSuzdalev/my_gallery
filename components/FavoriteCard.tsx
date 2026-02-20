@@ -41,7 +41,7 @@ export default function FavoriteCard({
 
       <div className="p-3 flex-1 flex flex-col justify-between">
         <div>
-          <h3 className="text-sm font-semibold truncate">{artwork.title}</h3>
+          <h3 className="text-sm text-gray-500 font-semibold truncate">{artwork.title}</h3>
           {artwork.description ? (
             <p className="text-xs text-gray-500 mt-1 line-clamp-2">{artwork.description}</p>
           ) : null}
