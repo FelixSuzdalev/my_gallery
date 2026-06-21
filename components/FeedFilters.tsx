@@ -1,33 +1,28 @@
-// components/FeedFilters.tsx
 'use client'
-import React, { useEffect, useRef, useState } from 'react'
-import { Search, SlidersHorizontal, ChevronDown, X } from 'lucide-react'
+
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, Filter, Search, SlidersHorizontal, X } from 'lucide-react'
 import { SortByEnum } from '@/app/core/models/types'
 
 interface Props {
-  activeTag: string;
-  setActiveTag: (tag: string) => void;
-  setSearchQuery: (query: string) => void;
-  sortBy: SortByEnum;
-  setSortBy: (value: SortByEnum) => void;
-  totalResults: number;
-
-  // optional enhancements (backwards compatible)
-  multiSelect?: boolean;
-  setActiveTags?: (tags: string[]) => void;
-  tagCounts?: Record<string, number>;
-  showClear?: boolean; // показать кнопку "Сбросить"
-
-  // NEW: уведомляем родителя о текущих фильтрах (совместимо, опционально)
+  activeTag: string
+  setActiveTag: (tag: string) => void
+  setSearchQuery: (query: string) => void
+  sortBy: SortByEnum
+  setSortBy: (value: SortByEnum) => void
+  totalResults: number
+  availableTags?: string[]
+  tagCounts?: Record<string, number>
+  showClear?: boolean
   onFiltersChange?: (filters: {
-    tag: string;
-    tags?: string[]; // when multiSelect
-    search: string;
-    sortBy: SortByEnum;
-  }) => void;
+    tag: string
+    search: string
+    sortBy: SortByEnum
+  }) => void
 }
 
-const TAGS = ['Все', 'Фотография', 'Digital', 'Минимализм', '3D', 'Архитектура', 'Портрет', 'Street Art']
+const ALL_TAG = 'Все'
+const FALLBACK_TAGS = ['Фотография', 'Digital', 'Минимализм', '3D', 'Архитектура', 'Портрет', 'Street Art']
 
 export default function FeedFilters({
   activeTag,
@@ -36,252 +31,165 @@ export default function FeedFilters({
   sortBy,
   setSortBy,
   totalResults,
-  multiSelect = false,
-  setActiveTags,
+  availableTags,
   tagCounts,
   showClear = true,
-  onFiltersChange
+  onFiltersChange,
 }: Props) {
-  const [showTags, setShowTags] = useState(false)
+  const [panelOpen, setPanelOpen] = useState(false)
   const [query, setQuery] = useState('')
   const debounceRef = useRef<number | null>(null)
 
-  // For multi-select mode we keep local selected tags state if caller provided setActiveTags
-  const [selectedTags, setSelectedTags] = useState<string[]>([])
+  const tags = useMemo(() => {
+    const source = availableTags && availableTags.length > 0 ? availableTags : FALLBACK_TAGS
+    return [ALL_TAG, ...Array.from(new Set(source)).filter(Boolean)]
+  }, [availableTags])
 
-  // keep local controlled select value in sync if parent changes sortBy externally
-  useEffect(() => {
-    // select uses sortBy directly — no local mirror needed
-  }, [sortBy])
+  const hasActiveFilters = Boolean(query.trim()) || activeTag !== ALL_TAG || sortBy !== SortByEnum.Newest
 
-  // Debounce search input before calling parent setSearchQuery and notify onFiltersChange
   useEffect(() => {
-    if (debounceRef.current) {
-      window.clearTimeout(debounceRef.current)
-    }
-    // delay 300ms
+    if (debounceRef.current) window.clearTimeout(debounceRef.current)
+
     debounceRef.current = window.setTimeout(() => {
-      const trimmed = query.trim()
-      setSearchQuery(trimmed)
-
-      // notify parent about current filters (single source of truth for filters)
-      if (onFiltersChange) {
-        onFiltersChange({
-          tag: multiSelect ? 'Множественный' : activeTag,
-          tags: multiSelect ? selectedTags : undefined,
-          search: trimmed,
-          sortBy
-        })
-      }
-    }, 300)
+      const search = query.trim()
+      setSearchQuery(search)
+      onFiltersChange?.({ tag: activeTag, search, sortBy })
+    }, 260)
 
     return () => {
-      if (debounceRef.current) {
-        window.clearTimeout(debounceRef.current)
-      }
+      if (debounceRef.current) window.clearTimeout(debounceRef.current)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query])
+  }, [activeTag, onFiltersChange, query, setSearchQuery, sortBy])
 
-  // Also call onFiltersChange whenever tag(s) or sortBy change
-  useEffect(() => {
-    if (!onFiltersChange) return
-    onFiltersChange({
-      tag: multiSelect ? (selectedTags.length === 1 ? selectedTags[0] : 'Множественный') : activeTag,
-      tags: multiSelect ? selectedTags : undefined,
-      search: query.trim(),
-      sortBy
+  function notify(next: { tag?: string; search?: string; sortBy?: SortByEnum }) {
+    onFiltersChange?.({
+      tag: next.tag ?? activeTag,
+      search: next.search ?? query.trim(),
+      sortBy: next.sortBy ?? sortBy,
     })
-    // intentionally depend on activeTag/selectedTags/sortBy/query
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTag, selectedTags, sortBy])
+  }
 
-  // helper: clear filters
   function clearFilters() {
     setQuery('')
     setSearchQuery('')
-    setShowTags(false)
-    if (multiSelect && setActiveTags) {
-      setSelectedTags([])
-      setActiveTags([])
-    } else {
-      setActiveTag('Все')
-    }
-
-    // notify parent
-    if (onFiltersChange) {
-      onFiltersChange({
-        tag: multiSelect ? 'Множественный' : 'Все',
-        tags: multiSelect ? [] : undefined,
-        search: '',
-        sortBy
-      })
-    }
+    setActiveTag(ALL_TAG)
+    setSortBy(SortByEnum.Newest)
+    notify({ tag: ALL_TAG, search: '', sortBy: SortByEnum.Newest })
   }
 
-  // handle tag click (single or multi mode)
   function handleTagClick(tag: string) {
-    if (multiSelect && setActiveTags) {
-      // toggle tag in selectedTags
-      setSelectedTags(prev => {
-        const exists = prev.includes(tag)
-        const next = exists ? prev.filter(t => t !== tag) : [...prev, tag]
-
-        // if user selected 'Все' in multi mode, interpret as clearing all
-        if (tag === 'Все') {
-          setActiveTags([])
-          // notify parent
-          if (onFiltersChange) {
-            onFiltersChange({ tag: 'Множественный', tags: [], search: query.trim(), sortBy })
-          }
-          return []
-        }
-
-        setActiveTags(next)
-
-        // notify parent
-        if (onFiltersChange) {
-          onFiltersChange({ tag: 'Множественный', tags: next, search: query.trim(), sortBy })
-        }
-
-        return next
-      })
-    } else {
-      // single-select mode uses setActiveTag (backward compatible)
-      setActiveTag(tag)
-
-      // notify parent (parent already gets activeTag via prop change effect above, but call explicitly to be immediate)
-      if (onFiltersChange) {
-        onFiltersChange({ tag, search: query.trim(), sortBy })
-      }
-      // close tags panel optionally
-      // setShowTags(false)
-    }
-  }
-
-  // keyboard support for tag buttons (Enter / Space)
-  function onTagKey(e: React.KeyboardEvent, tag: string) {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault()
-      handleTagClick(tag)
-    }
+    setActiveTag(tag)
+    notify({ tag })
   }
 
   return (
-    <div className="w-full bg-white pt-4 pb-2 border-b border-gray-100 sticky top-0 z-40 px-6">
-      <div className="max-w-[1800px] mx-auto space-y-4">
-        {/* Search full-width */}
-        <div className="flex items-center gap-4">
-          <div className="relative flex-1 group">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 group-focus-within:text-black transition-colors" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              type="text"
-              placeholder="Поиск идей, авторов, тегов..."
-              className="w-full bg-gray-100 hover:bg-gray-200 focus:bg-white border-none rounded-full py-3 pl-12 pr-6 text-sm text-black placeholder-gray-400 transition-all outline-none focus:ring-2 focus:ring-black"
-              aria-label="Поиск по сайту"
-            />
-            {query && (
-              <button
-                onClick={() => { setQuery(''); setSearchQuery(''); if (onFiltersChange) onFiltersChange({ tag: activeTag, tags: selectedTags, search: '', sortBy }) }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-full text-gray-500 hover:bg-gray-100"
-                aria-label="Очистить поиск"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            )}
+    <section className="pointer-events-none fixed right-4 top-[92px] z-40 max-w-[calc(100vw-2rem)] text-black md:right-6">
+      <div className="flex flex-col items-end gap-3">
+        <div className="pointer-events-auto flex max-w-full items-center gap-2 rounded-full border border-zinc-200 bg-white/92 p-1.5 shadow-[0_18px_60px_rgba(0,0,0,0.16)] backdrop-blur-xl">
+          <div className="hidden rounded-full px-3 py-2 text-xs font-semibold text-zinc-500 sm:block">
+            <span className="text-black">{totalResults}</span> работ
+            {activeTag !== ALL_TAG && <span className="ml-1 text-zinc-500">/ {activeTag}</span>}
           </div>
-        </div>
-
-        {/* Controls: Filters button, Sort select and results count */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowTags(s => !s)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all ${
-                showTags ? 'bg-black text-white' : 'hover:bg-gray-100 text-black'
-              }`}
-              aria-pressed={showTags}
-              aria-expanded={showTags}
-            >
-              <SlidersHorizontal className="w-4 h-4" />
-              Фильтры
-            </button>
-
-            <div className="relative group">
-              <label htmlFor="sort-select" className="sr-only">Сортировать</label>
-              <select
-                id="sort-select"
-                value={sortBy}
-                onChange={(e) => {
-                  const val = e.target.value as SortByEnum
-                  setSortBy(val)
-                  // notify parent immediately
-                  if (onFiltersChange) {
-                    onFiltersChange({
-                      tag: multiSelect ? 'Множественный' : activeTag,
-                      tags: multiSelect ? selectedTags : undefined,
-                      search: query.trim(),
-                      sortBy: val
-                    })
-                  }
-                }}
-                className="appearance-none bg-transparent pl-4 pr-10 py-2 text-xs font-bold uppercase tracking-widest text-slate-800 cursor-pointer outline-none  hover:bg-gray-100 rounded-lg transition-all"
-                aria-label="Сортировать"
-              >
-                <option value={SortByEnum.Newest}>Сначала новые</option>
-                <option value={SortByEnum.Popular}>По популярности</option>
-                <option value={SortByEnum.Trending}>В тренде</option>
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none text-gray-400" />
-            </div>
-
-            {showClear && (
+          <div className="flex items-center gap-1">
+            {showClear && hasActiveFilters && (
               <button
                 onClick={clearFilters}
-                className="ml-2 text-xs uppercase text-gray-500 hover:text-black px-3 py-2 rounded-lg transition-colors"
-                aria-label="Сбросить фильтры"
-                title="Сбросить фильтры"
+                className="rounded-full px-3 py-2 text-xs font-semibold text-zinc-500 transition hover:bg-zinc-100 hover:text-black"
               >
                 Сбросить
               </button>
             )}
-          </div>
-
-          <div className="hidden md:block text-[10px] text-gray-400 font-medium uppercase tracking-[0.2em]">
-            Найдено: <span className="text-black font-bold ml-1">{totalResults}</span>
+            <button
+              onClick={() => setPanelOpen((value) => !value)}
+              className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold transition ${
+                panelOpen ? 'bg-black text-white' : 'bg-zinc-100 text-black hover:bg-zinc-200'
+              }`}
+              aria-expanded={panelOpen}
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              <span className="hidden sm:inline">Поиск и фильтры</span>
+            </button>
           </div>
         </div>
 
-        {/* Tags area */}
-        {showTags && (
-          <div className="flex gap-2 overflow-x-auto no-scrollbar py-4 animate-in slide-in-from-top-2 duration-300">
-            {TAGS.map((tag) => {
-              const isActive = multiSelect ? selectedTags.includes(tag) : activeTag === tag
-              const count = tagCounts?.[tag] ?? null
-              return (
-                <button
-                  key={tag}
-                  onClick={() => handleTagClick(tag)}
-                  onKeyDown={(e) => onTagKey(e, tag)}
-                  className={`px-5 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest whitespace-nowrap transition-all flex items-center gap-2 ${
-                    isActive
-                      ? 'bg-black text-white'
-                      : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                  }`}
-                  aria-pressed={isActive}
+        {panelOpen && (
+          <div className="pointer-events-auto w-[min(640px,calc(100vw-2rem))] space-y-4 rounded-[28px] border border-zinc-200 bg-white/96 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.18)] backdrop-blur-xl">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+              <div className="relative flex-1">
+                <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  type="text"
+                  placeholder="Поиск работ, авторов, тегов..."
+                  className="w-full rounded-full border border-zinc-200 bg-zinc-100 py-3 pl-12 pr-10 text-sm font-medium text-black outline-none transition placeholder:text-zinc-400 focus:border-black focus:bg-white focus:ring-4 focus:ring-black/5"
+                  aria-label="Поиск работ"
+                />
+                {query && (
+                  <button
+                    onClick={() => {
+                      setQuery('')
+                      setSearchQuery('')
+                      notify({ search: '' })
+                    }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-1 text-zinc-500 transition hover:bg-zinc-200 hover:text-black"
+                    aria-label="Очистить поиск"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+
+              <div className="relative">
+                <label htmlFor="sort-select" className="sr-only">
+                  Сортировать
+                </label>
+                <select
+                  id="sort-select"
+                  value={sortBy}
+                  onChange={(event) => {
+                    const nextSort = event.target.value as SortByEnum
+                    setSortBy(nextSort)
+                    notify({ sortBy: nextSort })
+                  }}
+                  className="appearance-none rounded-full border border-zinc-200 bg-white py-3 pl-4 pr-10 text-sm font-semibold text-black outline-none transition hover:bg-zinc-100 focus:border-black"
                 >
-                  <span>{tag}</span>
-                  {count !== null && (
-                    <span className="text-xs text-gray-500">{count}</span>
-                  )}
-                </button>
-              )
-            })}
+                  <option value={SortByEnum.Newest}>Сначала новые</option>
+                  <option value={SortByEnum.Popular}>По популярности</option>
+                  <option value={SortByEnum.Trending}>В тренде</option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-sm text-zinc-500">
+              <Filter size={15} />
+              <span>{activeTag === ALL_TAG ? 'Без ограничения по тегу' : `Тег: ${activeTag}`}</span>
+            </div>
+
+            <div className="flex gap-2 overflow-x-auto border-t border-zinc-100 pt-4">
+              {tags.map((tag) => {
+                const isActive = activeTag === tag
+                const count = tagCounts?.[tag] ?? null
+
+                return (
+                  <button
+                    key={tag}
+                    onClick={() => handleTagClick(tag)}
+                    className={`flex shrink-0 items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                      isActive ? 'bg-black text-white' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200 hover:text-black'
+                    }`}
+                    aria-pressed={isActive}
+                  >
+                    <span>{tag}</span>
+                    {count !== null && <span className="text-xs opacity-70">{count}</span>}
+                  </button>
+                )
+              })}
+            </div>
           </div>
         )}
       </div>
-    </div>
+    </section>
   )
 }

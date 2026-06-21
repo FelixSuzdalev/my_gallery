@@ -18,10 +18,6 @@ export default function AdminUsersPage() {
   const [editing, setEditing] = useState<Profile | null>(null)
   const [showForm, setShowForm] = useState(false)
 
-  useEffect(() => {
-    load()
-  }, [])
-
   async function load() {
     setLoading(true)
     const { data, error } = await supabase
@@ -36,6 +32,13 @@ export default function AdminUsersPage() {
     }
     setLoading(false)
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   async function handleDelete(id: string) {
     if (!confirm('Удалить пользователя? Это удалит и все связанные работы (если они есть).')) return
@@ -66,7 +69,7 @@ export default function AdminUsersPage() {
             <div key={profile.id} className="bg-white rounded shadow p-4 flex flex-col">
               <div className="flex items-center gap-3">
                 {profile.avatar_url ? (
-                  <img src={profile.avatar_url} className="w-12 h-12 object-cover rounded" />
+                  <img src={profile.avatar_url} alt={profile.full_name ?? profile.username ?? ''} className="w-12 h-12 object-cover rounded" />
                 ) : (
                   <div className="w-12 h-12 bg-gray-100 rounded" />
                 )}

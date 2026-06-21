@@ -7,6 +7,7 @@ import "./globals.css";
 import Navbar from "@/components/Navbar";
 import NagModal from "@/components/NagModal";
 import Footer from "@/components/Footer"; // если хочешь Footer глобально; можно убрать, если используешь в page
+import ScrollProgress from "@/components/ScrollProgress";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -19,8 +20,15 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Virtual Gallery",
+  title: "Creative Archive",
   description: "Виртуальная галерея для фотографов, художников и дизайнеров",
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "any" },
+    ],
+    apple: [{ url: "/apple-icon.svg", type: "image/svg+xml" }],
+  },
 };
 
 export default function RootLayout({
@@ -33,6 +41,7 @@ export default function RootLayout({
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {/* глобальная оболочка: navbar всегда сверху, main растёт, footer фиксируется внизу */}
         <div className="min-h-screen flex flex-col bg-black text-white">
+          <ScrollProgress />
           <Navbar />
 
           {/* main оставляем гибким для любой страницы */}
@@ -50,4 +59,3 @@ export default function RootLayout({
     </html>
   );
 }
-

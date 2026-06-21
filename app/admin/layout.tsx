@@ -1,21 +1,36 @@
-// app/admin/layout.tsx
 'use client'
+
 import React, { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { usePathname, useRouter } from 'next/navigation'
+import { LayoutDashboard, Loader2, Paintbrush, Users, UserRoundCog } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+
+const ADMIN_NAV = [
+  { href: '/admin', label: 'Обзор', icon: LayoutDashboard },
+  { href: '/admin/artworks', label: 'Работы', icon: Paintbrush },
+  { href: '/admin/authors', label: 'Авторы', icon: UserRoundCog },
+  { href: '/admin/users', label: 'Пользователи', icon: Users },
+]
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const router = useRouter()
+  const pathname = usePathname()
 
   useEffect(() => {
     let mounted = true
-    ;(async () => {
-      const { data: { session } } = await supabase.auth.getSession()
+
+    async function checkAccess() {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+
       if (!session?.user) {
         router.push('/login')
         return
       }
+
       const { data: profile, error } = await supabase
         .from('profiles')
         .select('role')
@@ -28,30 +43,56 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       }
 
       if (mounted) setLoading(false)
-    })()
+    }
 
-    return () => { mounted = false }
+    checkAccess()
+    return () => {
+      mounted = false
+    }
   }, [router])
 
-  if (loading) return <div className="p-8">Проверка доступа...</div>
+  if (loading) {
+    return (
+      <div className="flex min-h-[50vh] items-center justify-center bg-zinc-50 text-zinc-500">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        Проверка доступа...
+      </div>
+    )
+  }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b py-4">
-        <div className="max-w-[1200px] mx-auto px-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-gray-500">Admin Panel</h2>
-          <nav className="flex gap-3">
-            <a href="/admin" className="text-sm px-3 py-1 rounded text-gray-500 hover:bg-gray-100">Dashboard</a>
-            <a href="/admin/artworks" className="text-sm px-3 py-1 rounded text-gray-500 hover:bg-gray-100">Работы</a>
-            <a href="/admin/authors" className="text-sm px-3 py-1 rounded  text-gray-500 hover:bg-gray-100">Авторы</a>
-            <a href="/admin/users" className="text-sm px-3 py-1 rounded  text-gray-500 hover:bg-gray-100">Пользователи</a>
-          </nav>
-        </div>
-      </header>
+    <div className="min-h-screen bg-zinc-50 text-zinc-950">
+      <div className="mx-auto max-w-[1440px] px-4 py-6 md:px-6">
+        <header className="mb-6 rounded-[28px] border border-zinc-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-xs font-semibold text-zinc-500">Creative Archive</p>
+              <h1 className="text-2xl font-black tracking-tight">Панель администратора</h1>
+            </div>
 
-      <main className="max-w-[1200px] mx-auto px-4 py-8">
+            <nav className="flex gap-2 overflow-x-auto rounded-full bg-zinc-100 p-1">
+              {ADMIN_NAV.map((item) => {
+                const Icon = item.icon
+                const active = pathname === item.href || pathname?.startsWith(`${item.href}/`)
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={`inline-flex shrink-0 items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                      active ? 'bg-black text-white shadow-sm' : 'text-zinc-600 hover:bg-white hover:text-black'
+                    }`}
+                  >
+                    <Icon size={16} />
+                    {item.label}
+                  </Link>
+                )
+              })}
+            </nav>
+          </div>
+        </header>
+
         {children}
-      </main>
+      </div>
     </div>
   )
 }

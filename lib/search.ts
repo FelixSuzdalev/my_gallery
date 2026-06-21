@@ -14,6 +14,14 @@ export type ArtworkRow = {
   _favorites_count?: number
 }
 
+type FavoriteRow = {
+  id: string
+  artwork_id: string
+  user_id: string
+}
+
+type UserFavoriteRow = Pick<FavoriteRow, 'id' | 'artwork_id'>
+
 export type SearchOptions = {
   q?: string
   tag?: string
@@ -51,7 +59,7 @@ export async function searchArtworks(opts: SearchOptions = {}) {
       if (error) {
         console.warn('searchArtworks: title/profile search error', error)
       } else {
-        (data || []).forEach((r: any) => idMap.set(r.id, r as ArtworkRow))
+        ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
       }
     } catch (err) {
       console.warn('searchArtworks: title/profile unexpected', err)
@@ -66,8 +74,8 @@ export async function searchArtworks(opts: SearchOptions = {}) {
         .from('artworks')
         .select(`*, profiles ( username, full_name )`)
         .contains('tags', [phrase])
-      if (!error) (data || []).forEach((r: any) => idMap.set(r.id, r as ArtworkRow))
-    } catch (err) {
+      if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
+    } catch {
       /* ignore */
     }
 
@@ -78,8 +86,8 @@ export async function searchArtworks(opts: SearchOptions = {}) {
           .from('artworks')
           .select(`*, profiles ( username, full_name )`)
           .overlaps('tags', tokens)
-        if (!error) (data || []).forEach((r: any) => idMap.set(r.id, r as ArtworkRow))
-      } catch (err) {
+        if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
+      } catch {
         /* ignore */
       }
     }
@@ -93,8 +101,8 @@ export async function searchArtworks(opts: SearchOptions = {}) {
         .select(`*, profiles ( username, full_name )`)
         .contains('tags', [tag])
         .range(offset, offset + limit - 1)
-      if (!error) (data || []).forEach((r: any) => idMap.set(r.id, r as ArtworkRow))
-    } catch (err) { /* ignore */ }
+      if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
+    } catch { /* ignore */ }
   } else if (tags && tags.length) {
     try {
       const { data, error } = await supabase
@@ -102,8 +110,8 @@ export async function searchArtworks(opts: SearchOptions = {}) {
         .select(`*, profiles ( username, full_name )`)
         .overlaps('tags', tags)
         .range(offset, offset + limit - 1)
-      if (!error) (data || []).forEach((r: any) => idMap.set(r.id, r as ArtworkRow))
-    } catch (err) { /* ignore */ }
+      if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
+    } catch { /* ignore */ }
   }
 
   // 4) fallback: если ничего не передано — берем свежие
@@ -114,15 +122,15 @@ export async function searchArtworks(opts: SearchOptions = {}) {
         .select(`*, profiles ( username, full_name )`)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1)
-      if (!error) (data || []).forEach((r: any) => idMap.set(r.id, r as ArtworkRow))
-    } catch (err) { /* ignore */ }
+      if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
+    } catch { /* ignore */ }
   }
 
   const artworkIds = Array.from(idMap.keys())
 
   // fetch favorites for these artworks (for counts + favMap)
   let countsMap: Record<string, number> = {}
-  let favMap: Record<string, string> = {}
+  const favMap: Record<string, string> = {}
 
   if (artworkIds.length > 0) {
     try {
@@ -132,7 +140,7 @@ export async function searchArtworks(opts: SearchOptions = {}) {
         .in('artwork_id', artworkIds)
 
       if (!favErr && favRows) {
-        countsMap = (favRows || []).reduce((acc: Record<string, number>, r: any) => {
+        countsMap = ((favRows || []) as FavoriteRow[]).reduce((acc: Record<string, number>, r) => {
           acc[r.artwork_id] = (acc[r.artwork_id] || 0) + 1
           return acc
         }, {})
@@ -153,10 +161,10 @@ export async function searchArtworks(opts: SearchOptions = {}) {
           .eq('user_id', userId)
           .in('artwork_id', artworkIds)
         if (!userFavErr && userFavRows) {
-          (userFavRows || []).forEach((r: any) => { favMap[r.artwork_id] = r.id })
+          ((userFavRows || []) as UserFavoriteRow[]).forEach((r) => { favMap[r.artwork_id] = r.id })
         }
       }
-    } catch (err) {
+    } catch {
       /* ignore */
     }
   }

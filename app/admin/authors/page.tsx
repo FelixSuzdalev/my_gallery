@@ -19,10 +19,6 @@ export default function AdminCreatorsPage() {
   const [showForm, setShowForm] = useState(false)
   const [showSelectModal, setShowSelectModal] = useState(false)
 
-  useEffect(() => {
-    load()
-  }, [])
-
   async function load() {
     setLoading(true)
     const { data, error } = await supabase
@@ -37,6 +33,13 @@ export default function AdminCreatorsPage() {
     }
     setLoading(false)
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   async function handleDelete(id: string) {
     if (!confirm('Удалить создателя? Это удалит и все связанные работы (cascade).')) return
@@ -81,7 +84,7 @@ export default function AdminCreatorsPage() {
             <div key={profile.id} className="bg-white rounded shadow p-4 flex flex-col">
               <div className="flex items-center gap-3">
                 {profile.avatar_url ? (
-                  <img src={profile.avatar_url} className="w-12 h-12 object-cover rounded" />
+                  <img src={profile.avatar_url} alt={profile.full_name ?? profile.username ?? ''} className="w-12 h-12 object-cover rounded" />
                 ) : (
                   <div className="w-12 h-12 bg-gray-100 rounded" />
                 )}
