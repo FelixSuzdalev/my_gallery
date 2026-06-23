@@ -6,6 +6,7 @@ import type { User } from '@supabase/supabase-js'
 import { Loader2, LogOut } from 'lucide-react'
 import { usePathname, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { getCurrentProfile, type CurrentProfile } from '@/lib/current-profile'
 
 const NAV_ITEMS = [
   { name: 'РАБОТЫ', href: '/feed' },
@@ -18,6 +19,7 @@ export default function Navbar() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [role, setRole] = useState<string | null>(null)
+  const [profile, setProfile] = useState<CurrentProfile | null>(null)
   const router = useRouter()
   const pathname = usePathname()
 
@@ -41,6 +43,8 @@ export default function Navbar() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
+      setRole(null)
+      setProfile(null)
       setUser(session?.user ?? null)
       setLoading(false)
     })
@@ -55,32 +59,34 @@ export default function Navbar() {
     let mounted = true
     if (!user) {
       setRole(null)
+      setProfile(null)
       return
     }
-    const userId = user.id
 
-    async function getRole() {
+    async function loadProfile() {
       try {
-        const { data: profile, error } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', userId)
-          .single()
+        const result = await getCurrentProfile()
+        if (!mounted) return
 
-        if (error) {
-          console.warn('Failed to fetch profile role:', error.message)
-          if (mounted) setRole(null)
+        if (result.error) {
+          console.warn('Failed to fetch current profile:', result.error.message)
+          setRole(null)
+          setProfile(null)
           return
         }
 
-        if (mounted) setRole(profile?.role ?? null)
+        setRole(result.profile?.role ?? null)
+        setProfile(result.profile)
       } catch (err) {
-        console.warn('Failed to fetch profile role:', err)
-        if (mounted) setRole(null)
+        console.warn('Failed to fetch current profile:', err)
+        if (mounted) {
+          setRole(null)
+          setProfile(null)
+        }
       }
     }
 
-    void getRole()
+    void loadProfile()
     return () => {
       mounted = false
     }
@@ -90,13 +96,17 @@ export default function Navbar() {
     await supabase.auth.signOut()
     setUser(null)
     setRole(null)
+    setProfile(null)
     router.refresh()
   }
 
   const avatarUrl =
-    typeof user?.user_metadata?.avatar_url === 'string' ? user.user_metadata.avatar_url : null
+    profile?.avatar_url ||
+    (typeof user?.user_metadata?.avatar_url === 'string' ? user.user_metadata.avatar_url : null)
   const fullName =
-    typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : null
+    profile?.full_name ||
+    profile?.username ||
+    (typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : null)
   const displayName = fullName || user?.email?.split('@')[0]
   const initials = (displayName || user?.email || 'U').slice(0, 2).toUpperCase()
   const isAdmin = role === 'admin'

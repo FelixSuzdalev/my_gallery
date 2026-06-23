@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ArrowRight, Loader2, MailCheck } from 'lucide-react'
+import { Loader2, MailCheck } from 'lucide-react'
 
 export default function CheckEmailClient() {
   const router = useRouter()
@@ -36,36 +36,6 @@ export default function CheckEmailClient() {
     }
   }
 
-  async function checkConfirmed() {
-    if (!email) {
-      setMessage('Email не указан в ссылке.')
-      return
-    }
-
-    setLoading(true)
-    setMessage(null)
-
-    try {
-      const res = await fetch('/api/auth/check-confirmation', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email }),
-      })
-      const json = await res.json()
-
-      if (res.ok && json?.confirmed) {
-        router.push('/login?confirmed=1')
-        return
-      }
-
-      setMessage('Почта еще не подтверждена. Перейдите по ссылке в письме и нажмите проверку снова.')
-    } catch (err: unknown) {
-      setMessage(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
-    }
-  }
-
   return (
     <main className="min-h-screen bg-white text-black">
       <section className="flex min-h-[calc(100vh-120px)] items-center justify-center px-6 py-16">
@@ -78,10 +48,10 @@ export default function CheckEmailClient() {
           <p className="secondary-copy mx-auto mt-4 max-w-sm text-zinc-500">
             {email ? (
               <>
-                Мы отправили письмо на <span className="font-semibold text-black">{email}</span>. Перейдите по ссылке, чтобы подтвердить адрес.
+                Мы отправили письмо на <span className="font-semibold text-black">{email}</span>. Подтвердите email по ссылке из письма, затем войдите в аккаунт.
               </>
             ) : (
-              'Email не найден в ссылке. Вернитесь к регистрации и попробуйте снова.'
+              'Подтвердите email по ссылке из письма, затем войдите в аккаунт.'
             )}
           </p>
 
@@ -93,25 +63,24 @@ export default function CheckEmailClient() {
 
           <div className="mt-7 space-y-3">
             <button
-              onClick={checkConfirmed}
-              disabled={loading || !email}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-full bg-black px-6 py-4 text-sm font-black text-white transition hover:bg-zinc-800 disabled:opacity-50"
+              onClick={() => router.push('/login')}
+              className="inline-flex w-full items-center justify-center rounded-full bg-black px-6 py-4 text-sm font-black text-white transition hover:bg-zinc-800"
             >
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
-              Я подтвердил почту
+              Перейти ко входу
             </button>
             <button
               onClick={resend}
               disabled={loading || !email}
-              className="w-full rounded-full border border-zinc-200 px-6 py-4 text-sm font-bold text-black transition hover:bg-zinc-100 disabled:opacity-50"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-zinc-200 px-6 py-4 text-sm font-bold text-black transition hover:bg-zinc-100 disabled:opacity-50"
             >
+              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
               Отправить письмо повторно
             </button>
             <button
-              onClick={() => router.push('/login')}
+              onClick={() => router.push('/register')}
               className="w-full rounded-full px-6 py-3 text-sm font-semibold text-zinc-500 transition hover:text-black"
             >
-              Вернуться ко входу
+              Вернуться к регистрации
             </button>
           </div>
         </div>
