@@ -1,6 +1,7 @@
-// lib/search.ts
-import { supabase } from '@/lib/supabase'
 import { SortByEnum } from '@/app/core/models/types'
+import { fetchArtworkStats } from '@/lib/artwork-stats'
+import { supabase } from '@/lib/supabase'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 
 export type ArtworkRow = {
   id: string
@@ -31,160 +32,175 @@ export type SearchOptions = {
   sortBy?: SortByEnum
 }
 
+const ALL_TAG = '\u0412\u0441\u0435'
+const MS_PER_DAY = 1000 * 60 * 60 * 24
+
 function ilikePattern(s: string) {
   return `%${s.replace(/%/g, '\\%').trim()}%`
 }
 
-/**
- * searchArtworks - универсальный поиск работ
- * Возвращает: { artworks, counts, favMap }
- */
+function publicArtworkQuery() {
+  let query = supabase
+    .from('artworks')
+    .select(`*, profiles ( username, full_name )`)
+
+  if (isSupabaseV2) {
+    query = query
+      .eq('status', 'published')
+      .eq('visibility', 'public')
+      .is('deleted_at', null)
+  }
+
+  return query
+}
+
+async function loadFavoriteCounts(artworkIds: string[]) {
+  if (artworkIds.length === 0) return {}
+
+  if (isSupabaseV2) {
+    const statsByArtworkId = await fetchArtworkStats(artworkIds)
+    return artworkIds.reduce<Record<string, number>>((acc, artworkId) => {
+      acc[artworkId] = statsByArtworkId[artworkId]?.favorites_count ?? 0
+      return acc
+    }, {})
+  }
+
+  const { data: favRows, error: favErr } = await supabase
+    .from('favorites')
+    .select('id, artwork_id, user_id')
+    .in('artwork_id', artworkIds)
+
+  if (favErr || !favRows) {
+    if (favErr) console.warn('searchArtworks: favorites fetch error', favErr)
+    return {}
+  }
+
+  return ((favRows || []) as FavoriteRow[]).reduce<Record<string, number>>((acc, row) => {
+    acc[row.artwork_id] = (acc[row.artwork_id] || 0) + 1
+    return acc
+  }, {})
+}
+
+async function loadCurrentUserFavorites(artworkIds: string[]) {
+  const favMap: Record<string, string> = {}
+  if (artworkIds.length === 0) return favMap
+
+  const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
+  if (sessionErr) console.warn('searchArtworks: getSession warning', sessionErr)
+
+  const userId = sessionData?.session?.user?.id ?? null
+  if (!userId) return favMap
+
+  const { data: userFavRows, error: userFavErr } = await supabase
+    .from('favorites')
+    .select('artwork_id, id')
+    .eq('user_id', userId)
+    .in('artwork_id', artworkIds)
+
+  if (userFavErr || !userFavRows) {
+    if (userFavErr) console.warn('searchArtworks: user favorites fetch error', userFavErr)
+    return favMap
+  }
+
+  ;((userFavRows || []) as UserFavoriteRow[]).forEach((row) => {
+    favMap[row.artwork_id] = row.id
+  })
+
+  return favMap
+}
+
 export async function searchArtworks(opts: SearchOptions = {}) {
   const { q, tag, tags, limit = 200, offset = 0, sortBy = SortByEnum.Newest } = opts
 
   const idMap = new Map<string, ArtworkRow>()
+  const hasQuery = Boolean(q?.trim())
 
-  // 1) если q — ищем по title OR profiles.username OR profiles.full_name
-  if (q && q.trim().length > 0) {
+  if (hasQuery) {
     try {
-      const pattern = ilikePattern(q)
-      // supabase .or uses comma-separated conditions
+      const pattern = ilikePattern(q ?? '')
       const orCond = `title.ilike.${pattern},profiles.username.ilike.${pattern},profiles.full_name.ilike.${pattern}`
-      const { data, error } = await supabase
-        .from('artworks')
-        .select(`*, profiles ( username, full_name )`)
+      const { data, error } = await publicArtworkQuery()
         .or(orCond)
         .range(offset, offset + limit - 1)
 
       if (error) {
         console.warn('searchArtworks: title/profile search error', error)
       } else {
-        ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
+        ((data || []) as ArtworkRow[]).forEach((row) => idMap.set(row.id, row))
       }
     } catch (err) {
       console.warn('searchArtworks: title/profile unexpected', err)
     }
   }
 
-  // 2) попытка поиска по тегам: сначала целая фраза как тег, потом токены -> overlaps
-  if (q && q.trim().length > 0) {
-    const phrase = q.trim()
+  if (hasQuery) {
+    const phrase = (q ?? '').trim()
     try {
-      const { data, error } = await supabase
-        .from('artworks')
-        .select(`*, profiles ( username, full_name )`)
-        .contains('tags', [phrase])
-      if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
+      const { data, error } = await publicArtworkQuery().contains('tags', [phrase])
+      if (!error) ((data || []) as ArtworkRow[]).forEach((row) => idMap.set(row.id, row))
     } catch {
       /* ignore */
     }
 
-    const tokens = phrase.split(/\s+/).map(t => t.trim()).filter(Boolean)
+    const tokens = phrase.split(/\s+/).map((token) => token.trim()).filter(Boolean)
     if (tokens.length) {
       try {
-        const { data, error } = await supabase
-          .from('artworks')
-          .select(`*, profiles ( username, full_name )`)
-          .overlaps('tags', tokens)
-        if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
+        const { data, error } = await publicArtworkQuery().overlaps('tags', tokens)
+        if (!error) ((data || []) as ArtworkRow[]).forEach((row) => idMap.set(row.id, row))
       } catch {
         /* ignore */
       }
     }
   }
 
-  // 3) явные фильтры tag / tags
-  if (tag && tag !== 'Все') {
+  if (tag && tag !== ALL_TAG) {
     try {
-      const { data, error } = await supabase
-        .from('artworks')
-        .select(`*, profiles ( username, full_name )`)
+      const { data, error } = await publicArtworkQuery()
         .contains('tags', [tag])
         .range(offset, offset + limit - 1)
-      if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
-    } catch { /* ignore */ }
+      if (!error) ((data || []) as ArtworkRow[]).forEach((row) => idMap.set(row.id, row))
+    } catch {
+      /* ignore */
+    }
   } else if (tags && tags.length) {
     try {
-      const { data, error } = await supabase
-        .from('artworks')
-        .select(`*, profiles ( username, full_name )`)
+      const { data, error } = await publicArtworkQuery()
         .overlaps('tags', tags)
         .range(offset, offset + limit - 1)
-      if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
-    } catch { /* ignore */ }
-  }
-
-  // 4) fallback: если ничего не передано — берем свежие
-  if ((!q || q.trim() === '') && (!tag && (!tags || tags.length === 0))) {
-    try {
-      const { data, error } = await supabase
-        .from('artworks')
-        .select(`*, profiles ( username, full_name )`)
-        .order('created_at', { ascending: false })
-        .range(offset, offset + limit - 1)
-      if (!error) ((data || []) as ArtworkRow[]).forEach((r) => idMap.set(r.id, r))
-    } catch { /* ignore */ }
-  }
-
-  const artworkIds = Array.from(idMap.keys())
-
-  // fetch favorites for these artworks (for counts + favMap)
-  let countsMap: Record<string, number> = {}
-  const favMap: Record<string, string> = {}
-
-  if (artworkIds.length > 0) {
-    try {
-      const { data: favRows, error: favErr } = await supabase
-        .from('favorites')
-        .select('id, artwork_id, user_id')
-        .in('artwork_id', artworkIds)
-
-      if (!favErr && favRows) {
-        countsMap = ((favRows || []) as FavoriteRow[]).reduce((acc: Record<string, number>, r) => {
-          acc[r.artwork_id] = (acc[r.artwork_id] || 0) + 1
-          return acc
-        }, {})
-      }
-    } catch (err) {
-      console.warn('searchArtworks: favorites fetch error', err)
-    }
-
-    // session => favMap for current user (mark liked)
-    try {
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
-      if (sessionErr) console.warn('searchArtworks: getSession warning', sessionErr)
-      const userId = sessionData?.session?.user?.id ?? null
-      if (userId) {
-        const { data: userFavRows, error: userFavErr } = await supabase
-          .from('favorites')
-          .select('artwork_id, id')
-          .eq('user_id', userId)
-          .in('artwork_id', artworkIds)
-        if (!userFavErr && userFavRows) {
-          ((userFavRows || []) as UserFavoriteRow[]).forEach((r) => { favMap[r.artwork_id] = r.id })
-        }
-      }
+      if (!error) ((data || []) as ArtworkRow[]).forEach((row) => idMap.set(row.id, row))
     } catch {
       /* ignore */
     }
   }
 
-  // produce final results array
-  const results: Array<ArtworkRow & { _favorites_count?: number }> = artworkIds.map(id => {
+  if (!hasQuery && !tag && (!tags || tags.length === 0)) {
+    try {
+      const { data, error } = await publicArtworkQuery()
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1)
+      if (!error) ((data || []) as ArtworkRow[]).forEach((row) => idMap.set(row.id, row))
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const artworkIds = Array.from(idMap.keys())
+  const countsMap = await loadFavoriteCounts(artworkIds)
+  const favMap = await loadCurrentUserFavorites(artworkIds)
+
+  const results: Array<ArtworkRow & { _favorites_count?: number }> = artworkIds.map((id) => {
     const row = idMap.get(id)!
     return {
       ...row,
-      liked: !!favMap[row.id],
-      _favorites_count: countsMap[row.id] ?? 0
+      liked: Boolean(favMap[row.id]),
+      _favorites_count: countsMap[row.id] ?? 0,
     }
   })
 
-  // client-side sort
-  const MS_PER_DAY = 1000 * 60 * 60 * 24
   const now = Date.now()
   const sorted = results.slice()
   if (sortBy === SortByEnum.Newest) {
-    sorted.sort((a, b) => (new Date(b.created_at ?? 0).getTime()) - (new Date(a.created_at ?? 0).getTime()))
+    sorted.sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
   } else if (sortBy === SortByEnum.Popular) {
     sorted.sort((a, b) => (b._favorites_count ?? 0) - (a._favorites_count ?? 0))
   } else if (sortBy === SortByEnum.Trending) {
@@ -199,6 +215,6 @@ export async function searchArtworks(opts: SearchOptions = {}) {
   return {
     artworks: sorted,
     counts: countsMap,
-    favMap
+    favMap,
   }
 }

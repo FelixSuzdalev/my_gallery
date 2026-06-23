@@ -5,6 +5,7 @@ import { motion, useScroll, useTransform } from 'framer-motion'
 import Link from 'next/link'
 import { ArrowUpRight } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 
 const WORDS = ['НЕ ЛЕНТА.', 'НЕ СОЦСЕТЬ.', 'ГАЛЕРЕЯ.']
 
@@ -63,9 +64,18 @@ export default function Hero() {
     let mounted = true
 
     async function loadPreviewWorks() {
-      const { data, error } = await supabase
+      let query = supabase
         .from('artworks')
         .select('id, title, image_url')
+
+      if (isSupabaseV2) {
+        query = query
+          .eq('status', 'published')
+          .eq('visibility', 'public')
+          .is('deleted_at', null)
+      }
+
+      const { data, error } = await query
         .order('created_at', { ascending: false })
         .limit(9)
 

@@ -7,7 +7,9 @@ import { supabase } from '@/lib/supabase'
 import FeedFilters from '@/components/FeedFilters'
 import NagModal from '@/components/NagModal'
 import { SortByEnum } from '@/app/core/models/types'
+import { fetchArtworkStats } from '@/lib/artwork-stats'
 import { searchArtworks, type ArtworkRow } from '@/lib/search'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 
 interface Artwork {
   id: string
@@ -85,7 +87,7 @@ export default function FeedPage() {
           liked: !!res?.favMap?.[artwork.id],
         }))
       } else {
-        const { data, error } = await supabase
+        let fallbackQuery = supabase
           .from('artworks')
           .select(`
             *,
@@ -94,6 +96,15 @@ export default function FeedPage() {
               full_name
             )
           `)
+
+        if (isSupabaseV2) {
+          fallbackQuery = fallbackQuery
+            .eq('status', 'published')
+            .eq('visibility', 'public')
+            .is('deleted_at', null)
+        }
+
+        const { data, error } = await fallbackQuery
           .order('created_at', { ascending: false })
           .limit(500)
 
@@ -127,46 +138,87 @@ export default function FeedPage() {
       const favMapObj: Record<string, string> = {}
 
       if (artworkIds.length > 0) {
-        const { data: favRowsForCount, error: favCountErr } = await supabase
-          .from('favorites')
-          .select('id, artwork_id, user_id')
-          .in('artwork_id', artworkIds)
+        if (isSupabaseV2) {
+          if (res?.counts) {
+            artworkIds.forEach((artworkId) => {
+              countsMap[artworkId] = res?.counts?.[artworkId] ?? 0
+            })
+          } else {
+            const statsByArtworkId = await fetchArtworkStats(artworkIds)
+            artworkIds.forEach((artworkId) => {
+              countsMap[artworkId] = statsByArtworkId[artworkId]?.favorites_count ?? 0
+            })
+          }
 
-        if (favCountErr) {
-          console.warn('Favorite counts load error:', favCountErr)
+          if (res?.favMap) {
+            Object.assign(favMapObj, res.favMap)
+          } else {
+            const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
+            if (sessionErr) console.warn('Session load warning:', sessionErr)
+
+            const userId = sessionData?.session?.user?.id ?? null
+            if (userId) {
+              const { data: userFavRows, error: userFavErr } = await supabase
+                .from('favorites')
+                .select('artwork_id, id')
+                .eq('user_id', userId)
+                .in('artwork_id', artworkIds)
+
+              if (userFavErr) {
+                console.warn('User favorites load warning:', userFavErr)
+              } else {
+                ;((userFavRows ?? []) as FavoriteRow[]).forEach((row) => {
+                  favMapObj[row.artwork_id] = row.id
+                })
+              }
+            }
+          }
         } else {
-          ;((favRowsForCount ?? []) as FavoriteRow[]).forEach((row) => {
-            countsMap[row.artwork_id] = (countsMap[row.artwork_id] ?? 0) + 1
-          })
-        }
-
-        const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
-        if (sessionErr) console.warn('Session load warning:', sessionErr)
-
-        const userId = sessionData?.session?.user?.id ?? null
-        if (userId) {
-          const { data: userFavRows, error: userFavErr } = await supabase
+          const { data: favRowsForCount, error: favCountErr } = await supabase
             .from('favorites')
-            .select('artwork_id, id')
-            .eq('user_id', userId)
+            .select('id, artwork_id, user_id')
             .in('artwork_id', artworkIds)
 
-          if (userFavErr) {
-            console.warn('User favorites load warning:', userFavErr)
+          if (favCountErr) {
+            console.warn('Favorite counts load error:', favCountErr)
           } else {
-            ;((userFavRows ?? []) as FavoriteRow[]).forEach((row) => {
-              favMapObj[row.artwork_id] = row.id
+            ;((favRowsForCount ?? []) as FavoriteRow[]).forEach((row) => {
+              countsMap[row.artwork_id] = (countsMap[row.artwork_id] ?? 0) + 1
             })
+          }
+
+          const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
+          if (sessionErr) console.warn('Session load warning:', sessionErr)
+
+          const userId = sessionData?.session?.user?.id ?? null
+          if (userId) {
+            const { data: userFavRows, error: userFavErr } = await supabase
+              .from('favorites')
+              .select('artwork_id, id')
+              .eq('user_id', userId)
+              .in('artwork_id', artworkIds)
+
+            if (userFavErr) {
+              console.warn('User favorites load warning:', userFavErr)
+            } else {
+              ;((userFavRows ?? []) as FavoriteRow[]).forEach((row) => {
+                favMapObj[row.artwork_id] = row.id
+              })
+            }
           }
         }
       }
 
-      Object.keys(favMapObj).forEach((artworkId) => {
-        countsMap[artworkId] = Math.max(countsMap[artworkId] ?? 0, 1)
-      })
+      if (!isSupabaseV2) {
+        Object.keys(favMapObj).forEach((artworkId) => {
+          countsMap[artworkId] = Math.max(countsMap[artworkId] ?? 0, 1)
+        })
+      }
 
       setCounts((previousCounts) => {
         const nextCounts = { ...countsMap }
+        if (isSupabaseV2) return nextCounts
+
         artworkIds.forEach((artworkId) => {
           if ((nextCounts[artworkId] ?? 0) === 0 && (previousCounts[artworkId] ?? 0) > 0) {
             nextCounts[artworkId] = previousCounts[artworkId]
@@ -201,7 +253,15 @@ export default function FeedPage() {
     let mounted = true
 
     async function loadTags() {
-      const { data, error } = await supabase.from('artworks').select('tags').limit(500)
+      let tagsQuery = supabase.from('artworks').select('tags')
+      if (isSupabaseV2) {
+        tagsQuery = tagsQuery
+          .eq('status', 'published')
+          .eq('visibility', 'public')
+          .is('deleted_at', null)
+      }
+
+      const { data, error } = await tagsQuery.limit(500)
       if (!mounted || error || !data) return
 
       const tags = Array.from(
@@ -298,6 +358,15 @@ export default function FeedPage() {
   }, [closeLightbox, lightboxIndex, showNext, showPrev])
 
   async function refreshCount(artworkId: string) {
+    if (isSupabaseV2) {
+      const statsByArtworkId = await fetchArtworkStats([artworkId])
+      setCounts((state) => ({
+        ...state,
+        [artworkId]: statsByArtworkId[artworkId]?.favorites_count ?? 0,
+      }))
+      return
+    }
+
     const { count, error } = await supabase
       .from('favorites')
       .select('*', { count: 'exact', head: true })
