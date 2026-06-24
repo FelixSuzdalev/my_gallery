@@ -1,7 +1,8 @@
-// app/admin/users/page.tsx
+﻿// app/admin/users/page.tsx
 'use client'
 import React, { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 import AuthorForm from '@/components/admin/AuthorForm'
 
 type Profile = { 
@@ -20,11 +21,14 @@ export default function AdminUsersPage() {
 
   async function load() {
     setLoading(true)
-    const { data, error } = await supabase
+    let query = supabase
       .from('profiles')
       .select('id, full_name, username, avatar_url, role')
-      .eq('role', 'user')  // только пользователи
-      .order('full_name')
+      .eq('role', 'user')
+
+    if (isSupabaseV2) query = query.is('deleted_at', null)
+
+    const { data, error } = await query.order('full_name')
     if (error) {
       alert('Ошибка: ' + error.message)
     } else {
@@ -41,6 +45,17 @@ export default function AdminUsersPage() {
   }, [])
 
   async function handleDelete(id: string) {
+    if (isSupabaseV2) {
+      if (!confirm('Скрыть профиль? Он исчезнет из публичных списков, но не будет удалён физически.')) return
+      const { error } = await supabase.from('profiles').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+      if (error) {
+        alert('Ошибка скрытия: ' + error.message)
+      } else {
+        setItems(prev => prev.filter(i => i.id !== id))
+      }
+      return
+    }
+
     if (!confirm('Удалить пользователя? Это удалит и все связанные работы (если они есть).')) return
     const { error } = await supabase.from('profiles').delete().eq('id', id)
     if (error) {
@@ -91,7 +106,7 @@ export default function AdminUsersPage() {
                   onClick={() => handleDelete(profile.id)} 
                   className="px-3 py-1 bg-red-50 text-red-700 rounded"
                 >
-                  Удалить
+                  {isSupabaseV2 ? 'Скрыть' : 'Удалить'}
                 </button>
               </div>
             </div>

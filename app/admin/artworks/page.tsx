@@ -1,28 +1,44 @@
-'use client'
+﻿'use client'
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  Archive,
   Edit3,
+  Eye,
+  EyeOff,
   Image as ImageIcon,
   Loader2,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Trash2,
   X,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 import ArtworkForm from '@/components/admin/ArtworkForm'
+import {
+  canArtworkHavePublicMedia,
+  getPrimaryArtworkMedia,
+  moveArtworkToNonPublicState,
+  type ArtworkStatus,
+  type ArtworkVisibility,
+} from '@/lib/v2-content'
 
 type ArtworkWithAuthor = {
   id: string
   title: string
   description: string | null
-  image_url: string
+  image_url: string | null
   author_id: string | null
   author_name: string
   tags: string[]
   created_at?: string | null
+  status?: ArtworkStatus
+  visibility?: ArtworkVisibility
+  comments_enabled?: boolean
+  deleted_at?: string | null
 }
 
 type ArtworkRow = Omit<ArtworkWithAuthor, 'author_name' | 'tags'> & {
@@ -35,9 +51,23 @@ type ArtworkRow = Omit<ArtworkWithAuthor, 'author_name' | 'tags'> & {
 
 type QualityFilter = 'all' | 'without-author' | 'without-description' | 'without-tags'
 type SortMode = 'newest' | 'title' | 'author'
+type StatusFilter = 'all' | ArtworkStatus
 
 const inputClass =
   'w-full rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-950 outline-none transition focus:border-black focus:ring-4 focus:ring-black/5'
+
+const statusLabels: Record<ArtworkStatus, string> = {
+  draft: 'Черновик',
+  published: 'Опубликовано',
+  hidden: 'Скрыто',
+  archived: 'В архиве',
+}
+
+const visibilityLabels: Record<ArtworkVisibility, string> = {
+  public: 'Открытая',
+  unlisted: 'По ссылке',
+  private: 'Приватная',
+}
 
 export default function AdminArtworksPage() {
   const [artworks, setArtworks] = useState<ArtworkWithAuthor[]>([])
@@ -48,13 +78,29 @@ export default function AdminArtworksPage() {
   const [authorFilter, setAuthorFilter] = useState('all')
   const [tagFilter, setTagFilter] = useState('all')
   const [qualityFilter, setQualityFilter] = useState<QualityFilter>('all')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [sortMode, setSortMode] = useState<SortMode>('newest')
+  const [updatingIds, setUpdatingIds] = useState<Record<string, boolean>>({})
 
   const loadArtworks = useCallback(async () => {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('artworks')
-      .select(`
+
+    const selectFields = isSupabaseV2
+      ? `
+        id,
+        title,
+        description,
+        image_url,
+        author_id,
+        tags,
+        created_at,
+        status,
+        visibility,
+        comments_enabled,
+        deleted_at,
+        profiles:author_id ( full_name, username )
+      `
+      : `
         id,
         title,
         description,
@@ -63,13 +109,17 @@ export default function AdminArtworksPage() {
         tags,
         created_at,
         profiles:author_id ( full_name, username )
-      `)
+      `
+
+    const { data, error } = await supabase
+      .from('artworks')
+      .select(selectFields)
       .order('created_at', { ascending: false })
 
     if (error) {
       alert('Ошибка загрузки работ: ' + error.message)
     } else {
-      const formatted = ((data ?? []) as ArtworkRow[]).map((item) => ({
+      const formatted = ((data ?? []) as unknown as ArtworkRow[]).map((item) => ({
         id: item.id,
         title: item.title,
         description: item.description,
@@ -77,6 +127,10 @@ export default function AdminArtworksPage() {
         author_id: item.author_id,
         tags: item.tags ?? [],
         created_at: item.created_at,
+        status: item.status,
+        visibility: item.visibility,
+        comments_enabled: item.comments_enabled,
+        deleted_at: item.deleted_at,
         author_name: item.profiles?.full_name || item.profiles?.username || 'Без автора',
       }))
       setArtworks(formatted)
@@ -113,6 +167,8 @@ export default function AdminArtworksPage() {
           artwork.description ?? '',
           artwork.author_name,
           artwork.tags.join(' '),
+          artwork.status ?? '',
+          artwork.visibility ?? '',
         ]
           .join(' ')
           .toLowerCase()
@@ -125,15 +181,16 @@ export default function AdminArtworksPage() {
           (qualityFilter === 'without-author' && !artwork.author_id) ||
           (qualityFilter === 'without-description' && !artwork.description?.trim()) ||
           (qualityFilter === 'without-tags' && artwork.tags.length === 0)
+        const matchesStatus = !isSupabaseV2 || statusFilter === 'all' || artwork.status === statusFilter
 
-        return matchesSearch && matchesAuthor && matchesTag && matchesQuality
+        return matchesSearch && matchesAuthor && matchesTag && matchesQuality && matchesStatus
       })
       .sort((a, b) => {
         if (sortMode === 'title') return a.title.localeCompare(b.title)
         if (sortMode === 'author') return a.author_name.localeCompare(b.author_name)
         return new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()
       })
-  }, [artworks, authorFilter, qualityFilter, query, sortMode, tagFilter])
+  }, [artworks, authorFilter, qualityFilter, query, sortMode, statusFilter, tagFilter])
 
   const openCreateModal = () => {
     setEditingArtwork(null)
@@ -166,13 +223,51 @@ export default function AdminArtworksPage() {
     }
   }
 
+  const handleLifecycleAction = async (
+    artwork: ArtworkWithAuthor,
+    patch: { status: ArtworkStatus; visibility: ArtworkVisibility }
+  ) => {
+    if (!isSupabaseV2 || updatingIds[artwork.id]) return
+
+    setUpdatingIds((state) => ({ ...state, [artwork.id]: true }))
+
+    try {
+      if (canArtworkHavePublicMedia({ ...patch, deleted_at: null })) {
+        const primaryMedia = await getPrimaryArtworkMedia(artwork.id)
+        if (!primaryMedia || !artwork.image_url) {
+          alert('Для публикации откройте редактирование и загрузите изображение.')
+          return
+        }
+
+        const { error } = await supabase.from('artworks').update(patch).eq('id', artwork.id)
+        if (error) throw error
+      } else {
+        await moveArtworkToNonPublicState(artwork.id, patch, { image_url: artwork.image_url })
+      }
+
+      await loadArtworks()
+    } catch (error) {
+      alert('Не удалось обновить статус: ' + getErrorMessage(error))
+    }
+
+    setUpdatingIds((state) => {
+      const next = { ...state }
+      delete next[artwork.id]
+      return next
+    })
+  }
+
   const resetFilters = () => {
     setQuery('')
     setAuthorFilter('all')
     setTagFilter('all')
     setQualityFilter('all')
+    setStatusFilter('all')
     setSortMode('newest')
   }
+
+  const publishedCount = artworks.filter((artwork) => artwork.status === 'published').length
+  const archivedCount = artworks.filter((artwork) => artwork.status === 'archived').length
 
   return (
     <div className="space-y-6">
@@ -182,8 +277,7 @@ export default function AdminArtworksPage() {
             <p className="text-sm font-medium text-zinc-500">Контент галереи</p>
             <h2 className="text-3xl font-black tracking-tight">Работы</h2>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-600">
-              Ищите работы по названию, автору, описанию и тегам. Быстро находите карточки без автора,
-              описания или тегов перед публикацией.
+              Ищите работы по названию, автору, описанию и тегам. В V2 управляйте публикацией через статусы без физического удаления.
             </p>
           </div>
 
@@ -208,8 +302,8 @@ export default function AdminArtworksPage() {
         <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
           <Stat label="Всего работ" value={artworks.length} />
           <Stat label="На экране" value={filteredArtworks.length} />
-          <Stat label="Авторов" value={authors.length} />
-          <Stat label="Тегов" value={tags.length} />
+          <Stat label={isSupabaseV2 ? 'Опубликовано' : 'Авторов'} value={isSupabaseV2 ? publishedCount : authors.length} />
+          <Stat label={isSupabaseV2 ? 'В архиве' : 'Тегов'} value={isSupabaseV2 ? archivedCount : tags.length} />
         </div>
       </section>
 
@@ -243,16 +337,26 @@ export default function AdminArtworksPage() {
             ))}
           </select>
 
-          <select
-            value={qualityFilter}
-            onChange={(event) => setQualityFilter(event.target.value as QualityFilter)}
-            className={inputClass}
-          >
-            <option value="all">Все статусы</option>
-            <option value="without-author">Без автора</option>
-            <option value="without-description">Без описания</option>
-            <option value="without-tags">Без тегов</option>
-          </select>
+          {isSupabaseV2 ? (
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)} className={inputClass}>
+              <option value="all">Все статусы</option>
+              <option value="published">Опубликовано</option>
+              <option value="draft">Черновик</option>
+              <option value="hidden">Скрыто</option>
+              <option value="archived">В архиве</option>
+            </select>
+          ) : (
+            <select
+              value={qualityFilter}
+              onChange={(event) => setQualityFilter(event.target.value as QualityFilter)}
+              className={inputClass}
+            >
+              <option value="all">Все статусы</option>
+              <option value="without-author">Без автора</option>
+              <option value="without-description">Без описания</option>
+              <option value="without-tags">Без тегов</option>
+            </select>
+          )}
 
           <select value={sortMode} onChange={(event) => setSortMode(event.target.value as SortMode)} className={inputClass}>
             <option value="newest">Сначала новые</option>
@@ -287,6 +391,7 @@ export default function AdminArtworksPage() {
                     <th className="px-5 py-4">Работа</th>
                     <th className="px-5 py-4">Автор</th>
                     <th className="px-5 py-4">Теги</th>
+                    {isSupabaseV2 && <th className="px-5 py-4">V2</th>}
                     <th className="px-5 py-4">Дата</th>
                     <th className="px-5 py-4 text-right">Действия</th>
                   </tr>
@@ -309,6 +414,11 @@ export default function AdminArtworksPage() {
                       <td className="px-5 py-4">
                         <TagList tags={artwork.tags} />
                       </td>
+                      {isSupabaseV2 && (
+                        <td className="px-5 py-4">
+                          <V2Badges artwork={artwork} />
+                        </td>
+                      )}
                       <td className="px-5 py-4 text-zinc-500">
                         {artwork.created_at ? new Date(artwork.created_at).toLocaleDateString('ru-RU') : '-'}
                       </td>
@@ -317,9 +427,17 @@ export default function AdminArtworksPage() {
                           <IconButton label="Редактировать" onClick={() => openEditModal(artwork)}>
                             <Edit3 size={16} />
                           </IconButton>
-                          <IconButton label="Удалить" danger onClick={() => void handleDelete(artwork.id)}>
-                            <Trash2 size={16} />
-                          </IconButton>
+                          {isSupabaseV2 ? (
+                            <LifecycleButtons
+                              artwork={artwork}
+                              busy={!!updatingIds[artwork.id]}
+                              onAction={handleLifecycleAction}
+                            />
+                          ) : (
+                            <IconButton label="Удалить" danger onClick={() => void handleDelete(artwork.id)}>
+                              <Trash2 size={16} />
+                            </IconButton>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -344,19 +462,28 @@ export default function AdminArtworksPage() {
                   <div className="mt-3">
                     <TagList tags={artwork.tags} />
                   </div>
-                  <div className="mt-3 flex gap-2">
+                  {isSupabaseV2 && (
+                    <div className="mt-3">
+                      <V2Badges artwork={artwork} />
+                    </div>
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-2">
                     <button
                       onClick={() => openEditModal(artwork)}
                       className="flex-1 rounded-full bg-black px-4 py-2 text-sm font-semibold text-white"
                     >
                       Редактировать
                     </button>
-                    <button
-                      onClick={() => void handleDelete(artwork.id)}
-                      className="rounded-full border border-red-200 px-4 py-2 text-sm font-semibold text-red-600"
-                    >
-                      Удалить
-                    </button>
+                    {isSupabaseV2 ? (
+                      <LifecycleTextButtons artwork={artwork} busy={!!updatingIds[artwork.id]} onAction={handleLifecycleAction} />
+                    ) : (
+                      <button
+                        onClick={() => void handleDelete(artwork.id)}
+                        className="rounded-full border border-red-200 px-4 py-2 text-sm font-semibold text-red-600"
+                      >
+                        Удалить
+                      </button>
+                    )}
                   </div>
                 </article>
               ))}
@@ -395,6 +522,9 @@ export default function AdminArtworksPage() {
                         image_url: editingArtwork.image_url,
                         author_id: editingArtwork.author_id ?? undefined,
                         tags: editingArtwork.tags,
+                        status: editingArtwork.status,
+                        visibility: editingArtwork.visibility,
+                        comments_enabled: editingArtwork.comments_enabled,
                       }
                     : undefined
                 }
@@ -450,6 +580,91 @@ function TagList({ tags }: { tags: string[] }) {
   )
 }
 
+function V2Badges({ artwork }: { artwork: ArtworkWithAuthor }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {artwork.status && <Badge tone={artwork.status === 'published' ? 'dark' : artwork.status === 'archived' ? 'muted' : 'light'}>{statusLabels[artwork.status]}</Badge>}
+      {artwork.visibility && <Badge tone={artwork.visibility === 'public' ? 'green' : 'muted'}>{visibilityLabels[artwork.visibility]}</Badge>}
+      <Badge tone={artwork.comments_enabled ? 'light' : 'muted'}>{artwork.comments_enabled ? 'Комментарии включены' : 'Комментарии отключены'}</Badge>
+    </div>
+  )
+}
+
+function Badge({ tone, children }: { tone: 'dark' | 'light' | 'muted' | 'green'; children: React.ReactNode }) {
+  const className = {
+    dark: 'bg-black text-white',
+    light: 'bg-zinc-100 text-zinc-700',
+    muted: 'bg-zinc-100 text-zinc-400',
+    green: 'bg-emerald-50 text-emerald-700',
+  }[tone]
+
+  return <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${className}`}>{children}</span>
+}
+
+function LifecycleButtons({
+  artwork,
+  busy,
+  onAction,
+}: {
+  artwork: ArtworkWithAuthor
+  busy: boolean
+  onAction: (artwork: ArtworkWithAuthor, patch: { status: ArtworkStatus; visibility: ArtworkVisibility }) => void
+}) {
+  if (busy) {
+    return (
+      <span className="rounded-full p-2 text-zinc-400">
+        <Loader2 className="h-4 w-4 animate-spin" />
+      </span>
+    )
+  }
+
+  return (
+    <>
+      <IconButton label="Опубликовать" onClick={() => onAction(artwork, { status: 'published', visibility: 'public' })}>
+        <Eye size={16} />
+      </IconButton>
+      <IconButton label="Скрыть" onClick={() => onAction(artwork, { status: 'hidden', visibility: 'private' })}>
+        <EyeOff size={16} />
+      </IconButton>
+      <IconButton label="В архив" onClick={() => onAction(artwork, { status: 'archived', visibility: 'private' })}>
+        <Archive size={16} />
+      </IconButton>
+      <IconButton label="Восстановить в черновик" onClick={() => onAction(artwork, { status: 'draft', visibility: 'private' })}>
+        <RotateCcw size={16} />
+      </IconButton>
+    </>
+  )
+}
+
+function LifecycleTextButtons({
+  artwork,
+  busy,
+  onAction,
+}: {
+  artwork: ArtworkWithAuthor
+  busy: boolean
+  onAction: (artwork: ArtworkWithAuthor, patch: { status: ArtworkStatus; visibility: ArtworkVisibility }) => void
+}) {
+  if (busy) return <span className="rounded-full px-4 py-2 text-sm text-zinc-500">Обновление...</span>
+
+  return (
+    <>
+      <button onClick={() => onAction(artwork, { status: 'published', visibility: 'public' })} className="rounded-full border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-700">
+        Опубликовать
+      </button>
+      <button onClick={() => onAction(artwork, { status: 'hidden', visibility: 'private' })} className="rounded-full border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-700">
+        Скрыть
+      </button>
+      <button onClick={() => onAction(artwork, { status: 'archived', visibility: 'private' })} className="rounded-full border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-700">
+        В архив
+      </button>
+      <button onClick={() => onAction(artwork, { status: 'draft', visibility: 'private' })} className="rounded-full border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-700">
+        Черновик
+      </button>
+    </>
+  )
+}
+
 function IconButton({
   label,
   danger,
@@ -473,4 +688,9 @@ function IconButton({
       {children}
     </button>
   )
+}
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  return JSON.stringify(error)
 }

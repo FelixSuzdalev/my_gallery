@@ -2,9 +2,18 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, Heart, Search, SlidersHorizontal, X } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Heart, Image as ImageIcon, Loader2, MessageCircle, Search, SlidersHorizontal, ThumbsUp, Trash2, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import FavoriteCard, { type FavoriteArtwork } from '@/components/FavoriteCard'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
+import {
+  createOwnAction,
+  deleteOwnAction,
+  getStats,
+  loadOwnActionMap,
+  refreshV2ArtworkStats,
+} from '@/lib/v2-content'
+import { fetchArtworkStats, type ArtworkStatsCounts, type ArtworkStatsMap } from '@/lib/artwork-stats'
 
 type Profile = {
   id: string
@@ -20,9 +29,14 @@ type FavRow = {
   artwork_id: string
 }
 
+type FavoriteArtworkV2 = FavoriteArtwork & {
+  image_url?: string | null
+  comments_enabled?: boolean | null
+}
+
 type FavoriteRow = {
   favId: string
-  artwork: FavoriteArtwork
+  artwork: FavoriteArtworkV2
   user?: Profile
 }
 
@@ -31,7 +45,7 @@ type FavoriteSort = 'recent' | 'title'
 const inputClass =
   'w-full rounded-full border border-zinc-200 bg-zinc-100 px-4 py-3 text-sm font-medium text-black outline-none transition placeholder:text-zinc-400 focus:border-black focus:bg-white focus:ring-4 focus:ring-black/5'
 
-function getAuthorName(artwork: FavoriteArtwork) {
+function getAuthorName(artwork: FavoriteArtworkV2) {
   return artwork.profiles?.full_name || artwork.profiles?.username || artwork.author_id || 'Автор'
 }
 
@@ -39,132 +53,159 @@ export default function FavoritesPage() {
   const [loading, setLoading] = useState(true)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [rows, setRows] = useState<FavoriteRow[]>([])
+  const [stats, setStats] = useState<ArtworkStatsMap>({})
+  const [likeMap, setLikeMap] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<Record<string, boolean>>({})
+  const [togglingLikeIds, setTogglingLikeIds] = useState<Record<string, boolean>>({})
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<FavoriteSort>('recent')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
 
-  useEffect(() => {
-    let mounted = true
+  const applyStatsUpdate = useCallback((artworkId: string, nextStats: ArtworkStatsCounts) => {
+    setStats((state) => ({ ...state, [artworkId]: nextStats }))
+  }, [])
 
-    async function loadFavorites() {
-      setLoading(true)
-      setError(null)
+  const loadFavorites = useCallback(async () => {
+    setLoading(true)
+    setError(null)
 
-      const { data: userData, error: userErr } = await supabase.auth.getUser()
-      if (userErr || !userData?.user) {
-        if (!mounted) return
-        setError('Пожалуйста, авторизуйтесь, чтобы видеть избранное.')
-        setLoading(false)
-        return
-      }
-
-      const uid = userData.user.id
-
-      const { data: prof, error: profErr } = await supabase
-        .from('profiles')
-        .select('id, full_name, username, avatar_url, role')
-        .eq('id', uid)
-        .single()
-
-      if (profErr) {
-        if (!mounted) return
-        setError('Ошибка загрузки профиля.')
-        setLoading(false)
-        return
-      }
-
-      if (!mounted) return
-      setProfile(prof as Profile)
-
-      const { data: favRowsData, error: favErr } = await supabase
-        .from('favorites')
-        .select('id, user_id, artwork_id')
-        .eq('user_id', uid)
-
-      if (favErr) {
-        if (!mounted) return
-        setError('Ошибка загрузки избранного.')
-        setLoading(false)
-        return
-      }
-
-      if (!favRowsData || favRowsData.length === 0) {
-        if (!mounted) return
-        setRows([])
-        setLoading(false)
-        return
-      }
-
-      const favRows = favRowsData as FavRow[]
-      const artworkIds = Array.from(new Set(favRows.map((row) => row.artwork_id)))
-
-      let artworksData: FavoriteArtwork[] = []
-      const artworkQuery = await supabase
-        .from('artworks')
-        .select(`
-          id,
-          title,
-          image_url,
-          description,
-          author_id,
-          created_at,
-          tags,
-          profiles (
-            username,
-            full_name
-          )
-        `)
-        .in('id', artworkIds)
-
-      if (artworkQuery.error) {
-        const fallbackQuery = await supabase
-          .from('artworks')
-          .select('id, title, image_url, description, author_id')
-          .in('id', artworkIds)
-
-        if (fallbackQuery.error) {
-          if (!mounted) return
-          setError('Не удалось загрузить работы.')
-          setLoading(false)
-          return
-        }
-
-        artworksData = (fallbackQuery.data ?? []) as FavoriteArtwork[]
-      } else {
-        artworksData = (artworkQuery.data ?? []) as FavoriteArtwork[]
-      }
-
-      const artMap = new Map<string, FavoriteArtwork>()
-      artworksData.forEach((artwork) => artMap.set(artwork.id, artwork))
-
-      const combined = favRows
-        .map((row) => {
-          const artwork = artMap.get(row.artwork_id)
-          if (!artwork) return null
-          return {
-            favId: row.id,
-            artwork,
-          }
-        })
-        .filter((row): row is FavoriteRow => Boolean(row))
-
-      if (!mounted) return
-      setRows(combined)
+    const { data: userData, error: userErr } = await supabase.auth.getUser()
+    if (userErr || !userData?.user) {
+      setError('Пожалуйста, авторизуйтесь, чтобы видеть избранное.')
       setLoading(false)
+      return
     }
 
+    const uid = userData.user.id
+
+    const { data: prof, error: profErr } = await supabase
+      .from('profiles')
+      .select('id, full_name, username, avatar_url, role')
+      .eq('id', uid)
+      .single()
+
+    if (profErr) {
+      setError('Ошибка загрузки профиля.')
+      setLoading(false)
+      return
+    }
+
+    setProfile(prof as unknown as Profile)
+
+    const { data: favRowsData, error: favErr } = await supabase
+      .from('favorites')
+      .select('id, user_id, artwork_id')
+      .eq('user_id', uid)
+
+    if (favErr) {
+      setError('Ошибка загрузки избранного.')
+      setLoading(false)
+      return
+    }
+
+    if (!favRowsData || favRowsData.length === 0) {
+      setRows([])
+      setStats({})
+      setLikeMap({})
+      setLoading(false)
+      return
+    }
+
+    const favRows = favRowsData as FavRow[]
+    const artworkIds = Array.from(new Set(favRows.map((row) => row.artwork_id)))
+
+    const artworkSelect = isSupabaseV2
+      ? `
+        id,
+        title,
+        image_url,
+        description,
+        author_id,
+        created_at,
+        tags,
+        comments_enabled,
+        profiles (
+          username,
+          full_name
+        )
+      `
+      : `
+        id,
+        title,
+        image_url,
+        description,
+        author_id,
+        created_at,
+        tags,
+        profiles (
+          username,
+          full_name
+        )
+      `
+
+    let artworkRequest = supabase
+      .from('artworks')
+      .select(artworkSelect)
+      .in('id', artworkIds)
+
+    if (isSupabaseV2) {
+      artworkRequest = artworkRequest
+        .eq('status', 'published')
+        .eq('visibility', 'public')
+        .is('deleted_at', null)
+    }
+
+    const artworkQuery = await artworkRequest
+
+    if (artworkQuery.error) {
+      setError('Не удалось загрузить работы.')
+      setLoading(false)
+      return
+    }
+
+    const artworksData = (artworkQuery.data ?? []) as unknown as FavoriteArtworkV2[]
+    const artMap = new Map<string, FavoriteArtworkV2>()
+    artworksData.forEach((artwork) => artMap.set(artwork.id, artwork))
+
+    const combined = favRows
+      .map((row) => {
+        const artwork = artMap.get(row.artwork_id)
+        if (!artwork) return null
+        return {
+          favId: row.id,
+          artwork,
+        }
+      })
+      .filter((row): row is FavoriteRow => Boolean(row))
+
+    if (isSupabaseV2) {
+      const visibleArtworkIds = combined.map((row) => row.artwork.id)
+      const [statsResult, likesResult] = await Promise.all([
+        fetchArtworkStats(visibleArtworkIds),
+        loadOwnActionMap('artwork_likes', uid, visibleArtworkIds),
+      ])
+      setStats(statsResult)
+      setLikeMap(likesResult)
+    } else {
+      setStats({})
+      setLikeMap({})
+    }
+
+    setRows(combined)
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadFavorites()
     }, 0)
 
     return () => {
-      mounted = false
       window.clearTimeout(timer)
     }
-  }, [])
+  }, [loadFavorites])
 
   const filteredRows = useMemo(() => {
     const search = query.trim().toLowerCase()
@@ -194,6 +235,7 @@ export default function FavoritesPage() {
 
   const hasActiveFilters = Boolean(query.trim()) || sort !== 'recent'
   const activeRow = lightboxIndex !== null ? filteredRows[lightboxIndex] : null
+  const activeStats = activeRow ? getStats(stats, activeRow.artwork.id) : null
 
   const resetFilters = () => {
     setQuery('')
@@ -230,14 +272,18 @@ export default function FavoritesPage() {
   }, [closeLightbox, lightboxIndex, showNext, showPrev])
 
   async function handleRemove(favId: string) {
+    const row = rows.find((item) => item.favId === favId)
     setDeleting((state) => ({ ...state, [favId]: true }))
     const prevRows = rows
-    setRows((state) => state.filter((row) => row.favId !== favId))
+    setRows((state) => state.filter((item) => item.favId !== favId))
 
-    const { error } = await supabase.from('favorites').delete().eq('id', favId)
-    if (error) {
+    const { error: deleteError } = await supabase.from('favorites').delete().eq('id', favId)
+    if (deleteError) {
       setRows(prevRows)
-      alert(`Не удалось удалить: ${error.message}`)
+      alert(`Не удалось удалить: ${deleteError.message}`)
+    } else if (isSupabaseV2 && row) {
+      const nextStats = await refreshV2ArtworkStats(row.artwork.id)
+      applyStatsUpdate(row.artwork.id, nextStats)
     }
 
     setDeleting((state) => {
@@ -245,6 +291,45 @@ export default function FavoritesPage() {
       delete next[favId]
       return next
     })
+  }
+
+  async function toggleLike(artworkId: string) {
+    if (!isSupabaseV2 || togglingLikeIds[artworkId]) return
+    const uid = profile?.id
+    if (!uid) return
+
+    setTogglingLikeIds((state) => ({ ...state, [artworkId]: true }))
+    const existingLikeId = likeMap[artworkId]
+    const previousStats = getStats(stats, artworkId)
+
+    try {
+      if (existingLikeId) {
+        setLikeMap((state) => {
+          const next = { ...state }
+          delete next[artworkId]
+          return next
+        })
+        applyStatsUpdate(artworkId, { ...previousStats, likes_count: Math.max(0, previousStats.likes_count - 1) })
+        await deleteOwnAction('artwork_likes', existingLikeId)
+      } else {
+        applyStatsUpdate(artworkId, { ...previousStats, likes_count: previousStats.likes_count + 1 })
+        const row = await createOwnAction('artwork_likes', uid, artworkId)
+        setLikeMap((state) => ({ ...state, [artworkId]: row.id }))
+      }
+
+      const nextStats = await refreshV2ArtworkStats(artworkId)
+      applyStatsUpdate(artworkId, nextStats)
+    } catch (err) {
+      applyStatsUpdate(artworkId, previousStats)
+      alert(`Не удалось обновить лайк: ${err instanceof Error ? err.message : 'ошибка'}`)
+      await loadFavorites()
+    } finally {
+      setTogglingLikeIds((state) => {
+        const next = { ...state }
+        delete next[artworkId]
+        return next
+      })
+    }
   }
 
   return (
@@ -326,7 +411,10 @@ export default function FavoritesPage() {
         </section>
 
         {loading ? (
-          <div className="py-20 text-center text-zinc-500">Загрузка избранного...</div>
+          <div className="flex items-center justify-center gap-2 py-20 text-zinc-500">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Загрузка избранного...
+          </div>
         ) : error ? (
           <div className="rounded-[28px] border border-dashed border-zinc-300 p-10 text-center">
             <p className="text-zinc-500">{error}</p>
@@ -337,18 +425,89 @@ export default function FavoritesPage() {
         ) : filteredRows.length === 0 ? (
           <div className="rounded-[28px] border border-dashed border-zinc-300 p-10 text-center">
             <p className="text-zinc-500">
-              {rows.length === 0 ? 'Здесь пока нет сохраненных работ.' : 'По выбранным параметрам ничего не найдено.'}
+              {rows.length === 0 ? 'Здесь пока нет сохраненных публичных работ.' : 'По выбранным параметрам ничего не найдено.'}
             </p>
             <Link href="/feed" className="mt-6 inline-flex rounded-full bg-black px-6 py-3 text-sm font-bold text-white transition hover:bg-zinc-800">
               Смотреть работы
             </Link>
+          </div>
+        ) : isSupabaseV2 ? (
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {filteredRows.map((row, index) => {
+              const rowStats = getStats(stats, row.artwork.id)
+              const isLiked = Boolean(likeMap[row.artwork.id])
+
+              return (
+                <article key={row.favId} className="gallery-card-motion archive-card-reveal group overflow-hidden rounded-[28px] border border-zinc-200 bg-white text-black shadow-sm transition hover:border-black hover:shadow-xl">
+                  <button className="block w-full text-left" onClick={() => setLightboxIndex(index)}>
+                    <div className="relative aspect-[4/5] overflow-hidden bg-zinc-100">
+                      {row.artwork.image_url ? (
+                        <img
+                          src={row.artwork.image_url}
+                          alt={row.artwork.title}
+                          className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-zinc-400">
+                          <ImageIcon className="h-8 w-8" />
+                        </div>
+                      )}
+                      <div className="like-pop absolute left-4 top-4 inline-flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-xs font-bold text-black shadow-lg backdrop-blur">
+                        <Heart size={14} className="fill-red-500 text-red-500" />
+                        В избранном
+                      </div>
+                    </div>
+                  </button>
+
+                  <div className="flex min-h-52 flex-col p-5">
+                    <div className="flex-1">
+                      <h3 className="line-clamp-2 text-xl font-black tracking-normal">{row.artwork.title}</h3>
+                      {row.artwork.description && (
+                        <p className="secondary-copy mt-2 line-clamp-3 text-sm text-zinc-500">{row.artwork.description}</p>
+                      )}
+                      <div className="mt-4 flex flex-wrap gap-2 text-xs font-bold text-zinc-500">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-3 py-1"><ThumbsUp size={13} />{rowStats.likes_count}</span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-3 py-1"><Heart size={13} />{rowStats.favorites_count}</span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-3 py-1"><MessageCircle size={13} />{rowStats.comments_count}</span>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 flex items-center justify-between gap-3 border-t border-zinc-100 pt-4">
+                      <div className="min-w-0 text-xs font-semibold text-zinc-500">
+                        <span className="block truncate">{getAuthorName(row.artwork)}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          onClick={() => void toggleLike(row.artwork.id)}
+                          className={`inline-flex h-10 w-10 items-center justify-center rounded-full transition disabled:opacity-50 ${
+                            isLiked ? 'bg-black text-white' : 'bg-zinc-100 text-zinc-700 hover:bg-black hover:text-white'
+                          }`}
+                          aria-label={isLiked ? 'Убрать лайк' : 'Поставить лайк'}
+                          disabled={!!togglingLikeIds[row.artwork.id]}
+                        >
+                          <ThumbsUp size={16} className={isLiked ? 'fill-current' : ''} />
+                        </button>
+                        <button
+                          onClick={() => void handleRemove(row.favId)}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-zinc-100 text-zinc-700 transition hover:bg-black hover:text-white disabled:opacity-50"
+                          aria-label="Убрать из избранного"
+                          disabled={!!deleting[row.favId]}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              )
+            })}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {filteredRows.map((row, index) => (
               <FavoriteCard
                 key={row.favId}
-                artwork={row.artwork}
+                artwork={row.artwork as FavoriteArtwork}
                 favId={row.favId}
                 showUser={!!profile && profile.role === 'admin'}
                 userLabel={row.user ? row.user.full_name || row.user.username : null}
@@ -362,10 +521,7 @@ export default function FavoritesPage() {
       </div>
 
       {activeRow && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-          onClick={closeLightbox}
-        >
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={closeLightbox}>
           <div
             className="relative flex max-h-[90vh] w-full max-w-[90vw] items-center justify-center"
             onClick={(event) => event.stopPropagation()}
@@ -387,14 +543,35 @@ export default function FavoritesPage() {
             </button>
 
             <div className="max-h-full max-w-full">
-              <img
-                src={activeRow.artwork.image_url}
-                alt={activeRow.artwork.title}
-                className="max-h-[80vh] max-w-[90vw] rounded-2xl object-contain"
-              />
-              <div className="mt-3 text-center text-white">
-                <div className="font-semibold">{activeRow.artwork.title}</div>
-                <div className="secondary-copy text-sm text-white/75">{getAuthorName(activeRow.artwork)}</div>
+              {activeRow.artwork.image_url ? (
+                <img
+                  src={activeRow.artwork.image_url}
+                  alt={activeRow.artwork.title}
+                  className="max-h-[80vh] max-w-[90vw] rounded-2xl object-contain"
+                />
+              ) : (
+                <div className="flex h-[70vh] w-[70vw] items-center justify-center rounded-2xl bg-zinc-900 text-zinc-500">
+                  <ImageIcon className="h-10 w-10" />
+                </div>
+              )}
+              <div className="mt-3 flex flex-col gap-3 text-center text-white sm:flex-row sm:items-center sm:justify-between sm:text-left">
+                <div>
+                  <div className="font-semibold">{activeRow.artwork.title}</div>
+                  <div className="secondary-copy text-sm text-white/75">{getAuthorName(activeRow.artwork)}</div>
+                </div>
+                {isSupabaseV2 && activeStats && (
+                  <div className="mx-auto flex flex-wrap gap-2 sm:mx-0">
+                    <span className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-bold text-black">
+                      <ThumbsUp size={16} /> {activeStats.likes_count}
+                    </span>
+                    <span className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-bold text-black">
+                      <Heart size={16} /> {activeStats.favorites_count}
+                    </span>
+                    <span className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-bold text-black">
+                      <MessageCircle size={16} /> {activeStats.comments_count}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 

@@ -1,6 +1,7 @@
-'use client'
+﻿'use client'
 import React, { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 import AuthorForm from '@/components/admin/AuthorForm'
 import SelectUserModal from '@/components/admin/SelectUserModal'
 
@@ -42,27 +43,23 @@ export default function AdminCreatorsPage() {
   }, [])
 
   async function handleDelete(id: string) {
+    if (isSupabaseV2) {
+      if (!confirm('Скрыть профиль? Он исчезнет из публичных списков, но не будет удалён физически.')) return
+      const { error } = await supabase.from('profiles').update({ deleted_at: new Date().toISOString() }).eq('id', id)
+      if (error) {
+        alert('Ошибка скрытия: ' + error.message)
+      } else {
+        setItems(prev => prev.filter(i => i.id !== id))
+      }
+      return
+    }
+
     if (!confirm('Удалить создателя? Это удалит и все связанные работы (cascade).')) return
     const { error } = await supabase.from('profiles').delete().eq('id', id)
     if (error) {
       alert('Ошибка удаления: ' + error.message)
     } else {
       setItems(prev => prev.filter(i => i.id !== id))
-    }
-  }
-
-  async function handleAssignCreators(selectedIds: string[]) {
-    // Обновляем роли выбранных пользователей на 'creator'
-    const { error } = await supabase
-      .from('profiles')
-      .update({ role: 'creator' })
-      .in('id', selectedIds)
-
-    if (error) {
-      alert('Ошибка назначения: ' + error.message)
-    } else {
-      setShowSelectModal(false)
-      await load() // перезагружаем список создателей
     }
   }
 
@@ -106,7 +103,7 @@ export default function AdminCreatorsPage() {
                   onClick={() => handleDelete(profile.id)}
                   className="px-3 py-1 bg-red-50 text-red-700 rounded"
                 >
-                  Удалить
+                  {isSupabaseV2 ? 'Скрыть' : 'Удалить'}
                 </button>
               </div>
             </div>

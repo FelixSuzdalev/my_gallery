@@ -1,18 +1,30 @@
-'use client'
+﻿'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
-import { Image as ImageIcon, Loader2, Save } from 'lucide-react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Image as ImageIcon, Loader2, Save, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
+import {
+  canArtworkHavePublicMedia,
+  deletePublicArtworkMedia,
+  getPrimaryArtworkMedia,
+  moveArtworkToNonPublicState,
+  type ArtworkMediaRow,
+  type ArtworkStatus,
+  type ArtworkVisibility,
+} from '@/lib/v2-content'
 
 type Props = {
   initial?: {
     id?: string
     title?: string
     description?: string
-    image_url?: string
+    image_url?: string | null
     author_id?: string
     tags?: string[]
+    status?: ArtworkStatus
+    visibility?: ArtworkVisibility
+    comments_enabled?: boolean
   }
   onDone?: () => void | Promise<void>
 }
@@ -29,15 +41,9 @@ type ArtworkPayload = {
   author_id: string | null
   tags: string[]
   image_url?: string | null
-  status?: 'published'
-  visibility?: 'public'
+  status?: ArtworkStatus
+  visibility?: ArtworkVisibility
   comments_enabled?: boolean
-}
-
-type ArtworkMediaRow = {
-  id: string
-  bucket_id: string
-  storage_path: string
 }
 
 type UploadedArtworkImage = {
@@ -50,7 +56,7 @@ const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 
 const fieldClass =
-  'w-full rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-black focus:ring-4 focus:ring-black/5'
+  'w-full rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-black focus:ring-4 focus:ring-black/5 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-500'
 
 export default function ArtworkForm({ initial, onDone }: Props) {
   const [title, setTitle] = useState(initial?.title ?? '')
@@ -60,10 +66,21 @@ export default function ArtworkForm({ initial, onDone }: Props) {
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
   const [authorId, setAuthorId] = useState(initial?.author_id ?? '')
   const [tagsText, setTagsText] = useState((initial?.tags ?? []).join(', '))
+  const [status, setStatus] = useState<ArtworkStatus>(initial?.status ?? 'published')
+  const [visibility, setVisibility] = useState<ArtworkVisibility>(initial?.visibility ?? 'public')
+  const [commentsEnabled, setCommentsEnabled] = useState(initial?.comments_enabled ?? true)
   const [saving, setSaving] = useState(false)
+  const [deletingImage, setDeletingImage] = useState(false)
+  const [hasPrimaryMedia, setHasPrimaryMedia] = useState(false)
+  const [checkingMedia, setCheckingMedia] = useState(false)
   const [authors, setAuthors] = useState<AuthorOption[]>([])
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
 
   const isEditing = Boolean(initial?.id)
+  const isV2Editing = isSupabaseV2 && isEditing
+  const canUploadNewImage = !isSupabaseV2 || canUseArtworkMedia({ status, visibility })
+  const hasExistingImage = Boolean(imageUrl) || hasPrimaryMedia
+  const hasPublishableImage = Boolean(imageUrl) && hasPrimaryMedia
 
   useEffect(() => {
     let mounted = true
@@ -97,6 +114,36 @@ export default function ArtworkForm({ initial, onDone }: Props) {
     }
   }, [imageFile])
 
+  useEffect(() => {
+    if (canUploadNewImage || !imageFile) return
+    setImageFile(null)
+    if (imageInputRef.current) imageInputRef.current.value = ''
+  }, [canUploadNewImage, imageFile])
+
+  useEffect(() => {
+    if (!isSupabaseV2 || !initial?.id) return
+
+    let mounted = true
+    setCheckingMedia(true)
+
+    async function loadPrimaryMedia() {
+      try {
+        const media = await getPrimaryArtworkMedia(initial?.id ?? '')
+        if (mounted) setHasPrimaryMedia(Boolean(media))
+      } catch (error) {
+        console.warn('Не удалось проверить primary artwork_media:', error)
+        if (mounted) setHasPrimaryMedia(false)
+      } finally {
+        if (mounted) setCheckingMedia(false)
+      }
+    }
+
+    void loadPrimaryMedia()
+    return () => {
+      mounted = false
+    }
+  }, [initial?.id])
+
   const tags = useMemo(() => {
     return tagsText
       .split(',')
@@ -106,12 +153,18 @@ export default function ArtworkForm({ initial, onDone }: Props) {
   }, [tagsText])
 
   const previewUrl = imagePreviewUrl ?? imageUrl
-  const isV2Editing = isSupabaseV2 && isEditing
 
   function handleImageFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null
-    const validationError = validateImageFile(file, false)
 
+    if (isSupabaseV2 && !canUploadNewImage && file) {
+      alert('Новое изображение можно загрузить только для опубликованной публичной V2-работы.')
+      event.target.value = ''
+      setImageFile(null)
+      return
+    }
+
+    const validationError = validateImageFile(file, false)
     if (validationError) {
       alert(validationError)
       event.target.value = ''
@@ -120,6 +173,24 @@ export default function ArtworkForm({ initial, onDone }: Props) {
     }
 
     setImageFile(file)
+  }
+
+  async function handleDeleteImage() {
+    if (!isSupabaseV2 || !initial?.id || deletingImage) return
+
+    setDeletingImage(true)
+    try {
+      await deletePublicArtworkMedia(initial.id, { image_url: imageUrl })
+      setImageUrl('')
+      setImageFile(null)
+      setImagePreviewUrl(null)
+      setHasPrimaryMedia(false)
+      if (imageInputRef.current) imageInputRef.current.value = ''
+    } catch (err: unknown) {
+      alert('Ошибка удаления изображения: ' + getErrorMessage(err))
+    } finally {
+      setDeletingImage(false)
+    }
   }
 
   async function handleSubmit(event: React.FormEvent) {
@@ -135,21 +206,38 @@ export default function ArtworkForm({ initial, onDone }: Props) {
 
     try {
       if (isSupabaseV2) {
-        const validationError = validateV2Submission(payload.author_id, imageFile, isEditing)
+        const v2Payload: ArtworkPayload = {
+          ...payload,
+          status,
+          visibility,
+          comments_enabled: commentsEnabled,
+        }
+
+        const validationError = validateV2Submission(v2Payload, imageFile, isEditing)
         if (validationError) {
           alert(validationError)
           return
         }
 
-        const v2Payload: ArtworkPayload = {
-          ...payload,
-          status: 'published',
-          visibility: 'public',
-          comments_enabled: true,
-        }
-
         if (initial?.id) {
-          await updateV2Artwork(initial.id, v2Payload, imageFile)
+          const isSavingPublic = canUseArtworkMedia(v2Payload)
+          if (isSavingPublic && !imageFile && !hasPublishableImage) {
+            alert('Для публикации загрузите изображение.')
+            return
+          }
+
+          if (!isSavingPublic && hasExistingImage) {
+            const confirmed = confirm(
+              'Публичное изображение будет удалено, потому что работа станет черновиком, скрытой, архивной или непубличной. Продолжить?'
+            )
+            if (!confirmed) return
+          }
+
+          await updateV2Artwork(initial.id, v2Payload, imageFile, {
+            currentImageUrl: imageUrl,
+            hasPublicMedia: hasExistingImage,
+            hasPublishableMedia: hasPublishableImage,
+          })
         } else {
           await createV2Artwork(v2Payload, imageFile)
         }
@@ -221,6 +309,46 @@ export default function ArtworkForm({ initial, onDone }: Props) {
             </select>
           </Field>
 
+          {isSupabaseV2 && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Статус">
+                <select value={status} onChange={(event) => setStatus(event.target.value as ArtworkStatus)} className={fieldClass}>
+                  <option value="draft">Черновик</option>
+                  <option value="published">Опубликовано</option>
+                  <option value="hidden">Скрыто</option>
+                  {status === 'archived' && (
+                    <option value="archived" disabled>
+                      В архиве
+                    </option>
+                  )}
+                </select>
+              </Field>
+
+              <Field label="Видимость">
+                <select value={visibility} onChange={(event) => setVisibility(event.target.value as ArtworkVisibility)} className={fieldClass}>
+                  <option value="public">Открытая</option>
+                  <option value="unlisted">По ссылке</option>
+                  <option value="private">Приватная</option>
+                </select>
+              </Field>
+            </div>
+          )}
+
+          {isSupabaseV2 && (
+            <label className="flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3">
+              <span>
+                <span className="block text-sm font-semibold text-zinc-900">Комментарии</span>
+                <span className="block text-xs leading-5 text-zinc-500">Пользователи смогут оставлять visible-комментарии.</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={commentsEnabled}
+                onChange={(event) => setCommentsEnabled(event.target.checked)}
+                className="h-5 w-5 accent-black"
+              />
+            </label>
+          )}
+
           <Field label="Теги" hint="Через запятую: фотография, минимализм, 3D.">
             <input
               type="text"
@@ -255,14 +383,20 @@ export default function ArtworkForm({ initial, onDone }: Props) {
           {isSupabaseV2 ? (
             <Field
               label="Изображение"
-              hint="JPEG, PNG или WebP, до 5 MB. В V2 эта форма сразу публикует работу в публичной галерее."
+              hint={
+                canUploadNewImage
+                  ? 'JPEG, PNG или WebP, до 5 MB. Загрузка доступна только для опубликованной открытой работы.'
+                  : 'Новое изображение нельзя загрузить для черновика, скрытой или непубличной работы: public bucket доступен только для опубликованных открытых работ.'
+              }
             >
               <input
+                ref={imageInputRef}
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
                 onChange={handleImageFileChange}
                 className={fieldClass}
-                required={!isEditing}
+                required={canUploadNewImage && !isEditing}
+                disabled={!canUploadNewImage}
               />
             </Field>
           ) : (
@@ -292,11 +426,23 @@ export default function ArtworkForm({ initial, onDone }: Props) {
               <div className="flex h-80 flex-col items-center justify-center text-zinc-400">
                 <ImageIcon className="mb-3 h-8 w-8" />
                 <span className="text-sm">
-                  {isSupabaseV2 ? 'Предпросмотр появится после выбора файла' : 'Предпросмотр появится после ссылки'}
+                  {isSupabaseV2 ? 'Изображение не выбрано' : 'Предпросмотр появится после ссылки'}
                 </span>
               </div>
             )}
           </div>
+
+          {isSupabaseV2 && isEditing && hasExistingImage && !checkingMedia && (
+            <button
+              type="button"
+              onClick={() => void handleDeleteImage()}
+              disabled={deletingImage || saving}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-zinc-200 px-5 py-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50"
+            >
+              {deletingImage ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              Удалить изображение
+            </button>
+          )}
         </div>
       </div>
 
@@ -310,7 +456,7 @@ export default function ArtworkForm({ initial, onDone }: Props) {
         </button>
         <button
           type="submit"
-          disabled={saving}
+          disabled={saving || deletingImage}
           className="inline-flex items-center justify-center gap-2 rounded-full bg-black px-5 py-3 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:opacity-50"
         >
           {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
@@ -321,9 +467,17 @@ export default function ArtworkForm({ initial, onDone }: Props) {
   )
 }
 
-function validateV2Submission(authorId: string | null, imageFile: File | null, isEditing: boolean) {
-  if (!authorId) return 'Выберите автора работы.'
-  return validateImageFile(imageFile, !isEditing)
+function canUseArtworkMedia(payload: Pick<ArtworkPayload, 'status' | 'visibility'>) {
+  return canArtworkHavePublicMedia({ status: payload.status, visibility: payload.visibility, deleted_at: null })
+}
+
+function validateV2Submission(payload: ArtworkPayload, imageFile: File | null, isEditing: boolean) {
+  if (!payload.author_id) return 'Выберите автора работы.'
+  if (imageFile && !canUseArtworkMedia(payload)) {
+    return 'Новое изображение можно загрузить только для опубликованной открытой V2-работы.'
+  }
+  if (!isEditing && canUseArtworkMedia(payload) && !imageFile) return 'Выберите изображение работы.'
+  return validateImageFile(imageFile, false)
 }
 
 function validateImageFile(file: File | null, required: boolean) {
@@ -335,7 +489,10 @@ function validateImageFile(file: File | null, required: boolean) {
 
 async function createV2Artwork(payload: ArtworkPayload, imageFile: File | null) {
   if (!payload.author_id) throw new Error('Выберите автора работы.')
-  if (!imageFile) throw new Error('Выберите изображение работы.')
+  if (imageFile && !canUseArtworkMedia(payload)) {
+    throw new Error('Новое изображение можно загрузить только для опубликованной открытой V2-работы.')
+  }
+  if (canUseArtworkMedia(payload) && !imageFile) throw new Error('Выберите изображение работы.')
 
   let artworkId: string | null = null
   let uploadedStoragePath: string | null = null
@@ -353,6 +510,8 @@ async function createV2Artwork(payload: ArtworkPayload, imageFile: File | null) 
 
     if (artworkError) throw artworkError
     artworkId = artwork.id as string
+
+    if (!imageFile) return
 
     const uploadedImage = await uploadArtworkImage(imageFile, payload.author_id, artworkId)
     uploadedStoragePath = uploadedImage.storagePath
@@ -386,7 +545,12 @@ async function createV2Artwork(payload: ArtworkPayload, imageFile: File | null) 
   }
 }
 
-async function updateV2Artwork(artworkId: string, payload: ArtworkPayload, imageFile: File | null) {
+async function updateV2Artwork(
+  artworkId: string,
+  payload: ArtworkPayload,
+  imageFile: File | null,
+  options: { currentImageUrl?: string | null; hasPublicMedia?: boolean; hasPublishableMedia?: boolean } = {}
+) {
   if (!payload.author_id) throw new Error('Выберите автора работы.')
 
   const { data: artwork, error: artworkError } = await supabase
@@ -400,6 +564,32 @@ async function updateV2Artwork(artworkId: string, payload: ArtworkPayload, image
   const currentAuthorId = (artwork as { author_id: string | null }).author_id
   if (payload.author_id !== currentAuthorId) {
     throw new Error('Нельзя изменить автора существующей V2-работы: он связан с путём загруженного изображения.')
+  }
+
+  if (imageFile && !canUseArtworkMedia(payload)) {
+    throw new Error('Новое изображение можно загрузить только для опубликованной открытой V2-работы.')
+  }
+
+  if (!canUseArtworkMedia(payload)) {
+    await moveArtworkToNonPublicState(
+      artworkId,
+      {
+        status: payload.status ?? 'draft',
+        visibility: payload.visibility ?? 'private',
+      },
+      options.hasPublicMedia ? { image_url: options.currentImageUrl } : {},
+      {
+        title: payload.title,
+        description: payload.description,
+        tags: payload.tags,
+        comments_enabled: payload.comments_enabled,
+      }
+    )
+    return
+  }
+
+  if (!imageFile && !options.hasPublishableMedia) {
+    throw new Error('Для публикации загрузите изображение.')
   }
 
   if (!imageFile) {
@@ -448,7 +638,7 @@ async function updateV2Artwork(artworkId: string, payload: ArtworkPayload, image
       createdMediaRowId = media.id as string
     }
 
-    const { error: artworkError } = await supabase
+    const { error: artworkUpdateError } = await supabase
       .from('artworks')
       .update({
         ...payload,
@@ -456,7 +646,7 @@ async function updateV2Artwork(artworkId: string, payload: ArtworkPayload, image
       })
       .eq('id', artworkId)
 
-    if (artworkError) throw artworkError
+    if (artworkUpdateError) throw artworkUpdateError
 
     if (previousMediaRow?.storage_path) {
       await removeArtworkMediaFile(previousMediaRow.storage_path)
@@ -486,18 +676,6 @@ async function uploadArtworkImage(file: File, authorId: string, artworkId: strin
     publicUrl: data.publicUrl,
     storagePath,
   }
-}
-
-async function getPrimaryArtworkMedia(artworkId: string): Promise<ArtworkMediaRow | null> {
-  const { data, error } = await supabase
-    .from('artwork_media')
-    .select('id, bucket_id, storage_path')
-    .eq('artwork_id', artworkId)
-    .eq('sort_order', 0)
-    .maybeSingle()
-
-  if (error) throw error
-  return data as ArtworkMediaRow | null
 }
 
 async function deleteArtworkMediaRow(id: string) {

@@ -2,27 +2,41 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, ChevronRight, Heart, Loader2, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Heart, Image as ImageIcon, Loader2, MessageCircle, ThumbsUp, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import FeedFilters from '@/components/FeedFilters'
 import NagModal from '@/components/NagModal'
+import ArtworkComments from '@/components/ArtworkComments'
 import { SortByEnum } from '@/app/core/models/types'
-import { fetchArtworkStats } from '@/lib/artwork-stats'
+import type { ArtworkStatsCounts, ArtworkStatsMap } from '@/lib/artwork-stats'
 import { searchArtworks, type ArtworkRow } from '@/lib/search'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
+import {
+  createOwnAction,
+  deleteOwnAction,
+  emptyStats,
+  getCurrentUserId,
+  getStats,
+  loadOwnActionMap,
+  loadV2Engagement,
+  refreshV2ArtworkStats,
+} from '@/lib/v2-content'
 
 interface Artwork {
   id: string
   title: string
-  image_url: string
+  image_url?: string | null
+  description?: string | null
   tags?: string[]
   created_at?: string
   author_id?: string
+  comments_enabled?: boolean
   profiles?: {
     username?: string | null
     full_name?: string | null
   } | null
   liked?: boolean
+  likedByCurrentUser?: boolean
 }
 
 type SearchResult = Awaited<ReturnType<typeof searchArtworks>>
@@ -46,10 +60,17 @@ export default function FeedPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [sortByEnum, setSortByEnum] = useState<SortByEnum>(SortByEnum.Newest)
   const [showNag, setShowNag] = useState(false)
-  const [togglingIds, setTogglingIds] = useState<Record<string, boolean>>({})
+  const [togglingFavoriteIds, setTogglingFavoriteIds] = useState<Record<string, boolean>>({})
+  const [togglingLikeIds, setTogglingLikeIds] = useState<Record<string, boolean>>({})
   const [favMap, setFavMap] = useState<Record<string, string>>({})
+  const [likeMap, setLikeMap] = useState<Record<string, string>>({})
   const [counts, setCounts] = useState<Record<string, number>>({})
+  const [stats, setStats] = useState<ArtworkStatsMap>({})
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
+
+  const applyStatsUpdate = useCallback((artworkId: string, nextStats: ArtworkStatsCounts) => {
+    setStats((state) => ({ ...state, [artworkId]: nextStats }))
+  }, [])
 
   const fetchArtworks = useCallback(async (filters?: { tag?: string; search?: string; sortBy?: SortByEnum }) => {
     setLoading(true)
@@ -76,26 +97,51 @@ export default function FeedPage() {
       let artworks: Artwork[] = []
 
       if (res && Array.isArray(res.artworks) && res.artworks.length > 0) {
-        artworks = res.artworks.map((artwork: ArtworkRow) => ({
+        artworks = res.artworks.map((artwork: ArtworkRow & { comments_enabled?: boolean; description?: string | null }) => ({
           id: artwork.id,
           title: artwork.title,
           image_url: artwork.image_url,
+          description: artwork.description,
           tags: artwork.tags,
           created_at: artwork.created_at,
           author_id: artwork.author_id,
+          comments_enabled: artwork.comments_enabled ?? true,
           profiles: artwork.profiles,
-          liked: !!res?.favMap?.[artwork.id],
+          liked: Boolean(res?.favMap?.[artwork.id]),
         }))
       } else {
-        let fallbackQuery = supabase
-          .from('artworks')
-          .select(`
-            *,
+        const artworkSelect = isSupabaseV2
+          ? `
+            id,
+            title,
+            image_url,
+            description,
+            tags,
+            created_at,
+            author_id,
+            comments_enabled,
             profiles (
               username,
               full_name
             )
-          `)
+          `
+          : `
+            id,
+            title,
+            image_url,
+            description,
+            tags,
+            created_at,
+            author_id,
+            profiles (
+              username,
+              full_name
+            )
+          `
+
+        let fallbackQuery = supabase
+          .from('artworks')
+          .select(artworkSelect)
 
         if (isSupabaseV2) {
           fallbackQuery = fallbackQuery
@@ -104,14 +150,12 @@ export default function FeedPage() {
             .is('deleted_at', null)
         }
 
-        const { data, error } = await fallbackQuery
-          .order('created_at', { ascending: false })
-          .limit(500)
+        const { data, error } = await fallbackQuery.order('created_at', { ascending: false }).limit(500)
 
         if (error) {
           console.error('Artworks fallback load error:', error)
         } else {
-          const all = (data ?? []) as Artwork[]
+          const all = (data ?? []) as unknown as Artwork[]
           const searchLower = search.toLowerCase()
           const tokens = hasSearch ? searchLower.split(/\s+/).filter(Boolean) : []
 
@@ -135,44 +179,16 @@ export default function FeedPage() {
 
       const artworkIds = artworks.map((work) => work.id)
       const countsMap: Record<string, number> = {}
-      const favMapObj: Record<string, string> = {}
+      let favMapObj: Record<string, string> = {}
+      let likeMapObj: Record<string, string> = {}
+      let statsMap: ArtworkStatsMap = {}
 
       if (artworkIds.length > 0) {
         if (isSupabaseV2) {
-          if (res?.counts) {
-            artworkIds.forEach((artworkId) => {
-              countsMap[artworkId] = res?.counts?.[artworkId] ?? 0
-            })
-          } else {
-            const statsByArtworkId = await fetchArtworkStats(artworkIds)
-            artworkIds.forEach((artworkId) => {
-              countsMap[artworkId] = statsByArtworkId[artworkId]?.favorites_count ?? 0
-            })
-          }
-
-          if (res?.favMap) {
-            Object.assign(favMapObj, res.favMap)
-          } else {
-            const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
-            if (sessionErr) console.warn('Session load warning:', sessionErr)
-
-            const userId = sessionData?.session?.user?.id ?? null
-            if (userId) {
-              const { data: userFavRows, error: userFavErr } = await supabase
-                .from('favorites')
-                .select('artwork_id, id')
-                .eq('user_id', userId)
-                .in('artwork_id', artworkIds)
-
-              if (userFavErr) {
-                console.warn('User favorites load warning:', userFavErr)
-              } else {
-                ;((userFavRows ?? []) as FavoriteRow[]).forEach((row) => {
-                  favMapObj[row.artwork_id] = row.id
-                })
-              }
-            }
-          }
+          const engagement = await loadV2Engagement(artworkIds)
+          statsMap = engagement.stats
+          favMapObj = engagement.favorites
+          likeMapObj = engagement.likes
         } else {
           const { data: favRowsForCount, error: favCountErr } = await supabase
             .from('favorites')
@@ -187,25 +203,8 @@ export default function FeedPage() {
             })
           }
 
-          const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
-          if (sessionErr) console.warn('Session load warning:', sessionErr)
-
-          const userId = sessionData?.session?.user?.id ?? null
-          if (userId) {
-            const { data: userFavRows, error: userFavErr } = await supabase
-              .from('favorites')
-              .select('artwork_id, id')
-              .eq('user_id', userId)
-              .in('artwork_id', artworkIds)
-
-            if (userFavErr) {
-              console.warn('User favorites load warning:', userFavErr)
-            } else {
-              ;((userFavRows ?? []) as FavoriteRow[]).forEach((row) => {
-                favMapObj[row.artwork_id] = row.id
-              })
-            }
-          }
+          const userId = await getCurrentUserId()
+          favMapObj = await loadOwnActionMap('favorites', userId, artworkIds)
         }
       }
 
@@ -215,6 +214,8 @@ export default function FeedPage() {
         })
       }
 
+      setStats(statsMap)
+      setLikeMap(likeMapObj)
       setCounts((previousCounts) => {
         const nextCounts = { ...countsMap }
         if (isSupabaseV2) return nextCounts
@@ -227,12 +228,20 @@ export default function FeedPage() {
         return nextCounts
       })
       setFavMap(favMapObj)
-      setWorks(artworks.map((work) => ({ ...work, liked: !!favMapObj[work.id] })))
+      setWorks(
+        artworks.map((work) => ({
+          ...work,
+          liked: Boolean(favMapObj[work.id]),
+          likedByCurrentUser: Boolean(likeMapObj[work.id]),
+        }))
+      )
     } catch (err) {
       console.error('fetchArtworks unexpected error', err)
       setWorks([])
       setCounts({})
+      setStats({})
       setFavMap({})
+      setLikeMap({})
     } finally {
       setLoading(false)
     }
@@ -286,6 +295,14 @@ export default function FeedPage() {
     }
   }, [])
 
+  const getFavoriteCount = useCallback(
+    (artworkId: string) => (isSupabaseV2 ? getStats(stats, artworkId).favorites_count : counts[artworkId] ?? 0),
+    [counts, stats]
+  )
+
+  const getLikeCount = useCallback((artworkId: string) => getStats(stats, artworkId).likes_count, [stats])
+  const getCommentCount = useCallback((artworkId: string) => getStats(stats, artworkId).comments_count, [stats])
+
   const processedWorks = useMemo(() => {
     const sortedWorks = [...works]
 
@@ -293,7 +310,9 @@ export default function FeedPage() {
       sortedWorks.sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
     } else if (sortByEnum === SortByEnum.Popular) {
       sortedWorks.sort((a, b) => {
-        const diff = (counts[b.id] ?? 0) - (counts[a.id] ?? 0)
+        const countA = isSupabaseV2 ? getStats(stats, a.id).likes_count : counts[a.id] ?? 0
+        const countB = isSupabaseV2 ? getStats(stats, b.id).likes_count : counts[b.id] ?? 0
+        const diff = countB - countA
         if (diff !== 0) return diff
         return new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()
       })
@@ -304,15 +323,17 @@ export default function FeedPage() {
       sortedWorks.sort((a, b) => {
         const ageA = Math.max(1, (now - new Date(a.created_at ?? now).getTime()) / msPerDay)
         const ageB = Math.max(1, (now - new Date(b.created_at ?? now).getTime()) / msPerDay)
-        const scoreA = (counts[a.id] ?? 0) / ageA
-        const scoreB = (counts[b.id] ?? 0) / ageB
+        const baseA = isSupabaseV2 ? getStats(stats, a.id).likes_count : counts[a.id] ?? 0
+        const baseB = isSupabaseV2 ? getStats(stats, b.id).likes_count : counts[b.id] ?? 0
+        const scoreA = baseA / ageA
+        const scoreB = baseB / ageB
         if (scoreB !== scoreA) return scoreB - scoreA
         return new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()
       })
     }
 
     return sortedWorks
-  }, [counts, sortByEnum, works])
+  }, [counts, sortByEnum, stats, works])
 
   const tagCounts = useMemo(() => {
     return works.reduce((acc: Record<string, number>, work) => {
@@ -359,11 +380,8 @@ export default function FeedPage() {
 
   async function refreshCount(artworkId: string) {
     if (isSupabaseV2) {
-      const statsByArtworkId = await fetchArtworkStats([artworkId])
-      setCounts((state) => ({
-        ...state,
-        [artworkId]: statsByArtworkId[artworkId]?.favorites_count ?? 0,
-      }))
+      const nextStats = await refreshV2ArtworkStats(artworkId)
+      applyStatsUpdate(artworkId, nextStats)
       return
     }
 
@@ -381,25 +399,20 @@ export default function FeedPage() {
   }
 
   const toggleFavorite = async (artworkId: string) => {
-    if (togglingIds[artworkId]) return
+    if (togglingFavoriteIds[artworkId]) return
 
     try {
-      setTogglingIds((state) => ({ ...state, [artworkId]: true }))
+      setTogglingFavoriteIds((state) => ({ ...state, [artworkId]: true }))
 
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
-      if (sessionErr) {
-        alert('Ошибка авторизации. Попробуйте перезайти.')
-        return
-      }
-
-      const user = sessionData?.session?.user ?? null
-      if (!user) {
+      const userId = await getCurrentUserId()
+      if (!userId) {
         setShowNag(true)
         return
       }
 
       const existingFavId = favMap[artworkId]
       const previousCount = counts[artworkId] ?? 0
+      const previousStats = getStats(stats, artworkId)
 
       if (existingFavId) {
         setFavMap((state) => {
@@ -408,16 +421,21 @@ export default function FeedPage() {
           return next
         })
         setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, liked: false } : work)))
-        setCounts((state) => ({
-          ...state,
-          [artworkId]: Math.max(0, previousCount - 1),
-        }))
+        if (isSupabaseV2) {
+          applyStatsUpdate(artworkId, {
+            ...previousStats,
+            favorites_count: Math.max(0, previousStats.favorites_count - 1),
+          })
+        } else {
+          setCounts((state) => ({ ...state, [artworkId]: Math.max(0, previousCount - 1) }))
+        }
 
         const { error } = await supabase.from('favorites').delete().eq('id', existingFavId)
         if (error) {
           setFavMap((state) => ({ ...state, [artworkId]: existingFavId }))
           setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, liked: true } : work)))
-          setCounts((state) => ({ ...state, [artworkId]: previousCount }))
+          if (isSupabaseV2) applyStatsUpdate(artworkId, previousStats)
+          else setCounts((state) => ({ ...state, [artworkId]: previousCount }))
           alert(`Не удалось удалить из избранного: ${error.message}`)
           return
         }
@@ -427,14 +445,15 @@ export default function FeedPage() {
       }
 
       setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, liked: true } : work)))
-      setCounts((state) => ({
-        ...state,
-        [artworkId]: previousCount + 1,
-      }))
+      if (isSupabaseV2) {
+        applyStatsUpdate(artworkId, { ...previousStats, favorites_count: previousStats.favorites_count + 1 })
+      } else {
+        setCounts((state) => ({ ...state, [artworkId]: previousCount + 1 }))
+      }
 
       const { data, error } = await supabase
         .from('favorites')
-        .insert({ user_id: user.id, artwork_id: artworkId })
+        .insert({ user_id: userId, artwork_id: artworkId })
         .select('id, artwork_id')
         .single()
 
@@ -446,7 +465,7 @@ export default function FeedPage() {
           const { data: refetchedFavorite } = await supabase
             .from('favorites')
             .select('id, artwork_id')
-            .eq('user_id', user.id)
+            .eq('user_id', userId)
             .eq('artwork_id', artworkId)
             .maybeSingle()
 
@@ -458,7 +477,8 @@ export default function FeedPage() {
         }
 
         setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, liked: false } : work)))
-        setCounts((state) => ({ ...state, [artworkId]: previousCount }))
+        if (isSupabaseV2) applyStatsUpdate(artworkId, previousStats)
+        else setCounts((state) => ({ ...state, [artworkId]: previousCount }))
         alert(`Не удалось добавить в избранное: ${message}`)
         return
       }
@@ -469,13 +489,73 @@ export default function FeedPage() {
       console.error('Favorite toggle error:', err)
       alert('Ошибка при переключении избранного.')
     } finally {
-      setTogglingIds((state) => {
+      setTogglingFavoriteIds((state) => {
         const next = { ...state }
         delete next[artworkId]
         return next
       })
     }
   }
+
+  const toggleLike = async (artworkId: string) => {
+    if (!isSupabaseV2 || togglingLikeIds[artworkId]) return
+
+    try {
+      setTogglingLikeIds((state) => ({ ...state, [artworkId]: true }))
+
+      const userId = await getCurrentUserId()
+      if (!userId) {
+        setShowNag(true)
+        return
+      }
+
+      const existingLikeId = likeMap[artworkId]
+      const previousStats = getStats(stats, artworkId)
+
+      if (existingLikeId) {
+        setLikeMap((state) => {
+          const next = { ...state }
+          delete next[artworkId]
+          return next
+        })
+        setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, likedByCurrentUser: false } : work)))
+        applyStatsUpdate(artworkId, { ...previousStats, likes_count: Math.max(0, previousStats.likes_count - 1) })
+
+        try {
+          await deleteOwnAction('artwork_likes', existingLikeId)
+          void refreshCount(artworkId)
+        } catch (error) {
+          setLikeMap((state) => ({ ...state, [artworkId]: existingLikeId }))
+          setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, likedByCurrentUser: true } : work)))
+          applyStatsUpdate(artworkId, previousStats)
+          alert(`Не удалось убрать лайк: ${error instanceof Error ? error.message : 'ошибка'}`)
+        }
+        return
+      }
+
+      setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, likedByCurrentUser: true } : work)))
+      applyStatsUpdate(artworkId, { ...previousStats, likes_count: previousStats.likes_count + 1 })
+
+      try {
+        const row = await createOwnAction('artwork_likes', userId, artworkId)
+        setLikeMap((state) => ({ ...state, [artworkId]: row.id }))
+        void refreshCount(artworkId)
+      } catch (error) {
+        setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, likedByCurrentUser: false } : work)))
+        applyStatsUpdate(artworkId, previousStats)
+        alert(`Не удалось поставить лайк: ${error instanceof Error ? error.message : 'ошибка'}`)
+      }
+    } finally {
+      setTogglingLikeIds((state) => {
+        const next = { ...state }
+        delete next[artworkId]
+        return next
+      })
+    }
+  }
+
+  const activeWork = lightboxIndex !== null ? processedWorks[lightboxIndex] : null
+  const activeStats = activeWork ? getStats(stats, activeWork.id) : emptyStats
 
   return (
     <main className="min-h-screen bg-white">
@@ -508,11 +588,37 @@ export default function FeedPage() {
                 className="gallery-card-motion archive-card-reveal group relative break-inside-avoid cursor-pointer overflow-hidden rounded-[24px] bg-zinc-100 shadow-sm"
                 onClick={() => openLightbox(work.id)}
               >
-                <img
-                  src={work.image_url}
-                  alt={work.title}
-                  className="h-auto w-full transition-transform duration-700 group-hover:scale-105"
-                />
+                {work.image_url ? (
+                  <img
+                    src={work.image_url}
+                    alt={work.title}
+                    className="h-auto w-full transition-transform duration-700 group-hover:scale-105"
+                  />
+                ) : (
+                  <div className="flex aspect-[4/5] w-full items-center justify-center text-zinc-400">
+                    <ImageIcon />
+                  </div>
+                )}
+
+                {isSupabaseV2 && (
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void toggleLike(work.id)
+                    }}
+                    className={`absolute left-3 top-3 z-10 inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-bold shadow-xl backdrop-blur-md transition ${
+                      work.likedByCurrentUser
+                        ? 'bg-black text-white'
+                        : 'bg-white/90 text-black hover:bg-black hover:text-white'
+                    }`}
+                    title={work.likedByCurrentUser ? 'Убрать лайк' : 'Поставить лайк'}
+                    aria-pressed={work.likedByCurrentUser ? 'true' : 'false'}
+                    disabled={!!togglingLikeIds[work.id]}
+                  >
+                    <ThumbsUp size={16} className={work.likedByCurrentUser ? 'fill-current' : ''} />
+                    <span>{getLikeCount(work.id)}</span>
+                  </button>
+                )}
 
                 <button
                   onClick={(event) => {
@@ -526,10 +632,10 @@ export default function FeedPage() {
                   }`}
                   title={work.liked ? 'Убрать из избранного' : 'Добавить в избранное'}
                   aria-pressed={work.liked ? 'true' : 'false'}
-                  disabled={!!togglingIds[work.id]}
+                  disabled={!!togglingFavoriteIds[work.id]}
                 >
                   <Heart size={16} className={work.liked ? 'fill-current' : ''} />
-                  <span>{counts[work.id] ?? 0}</span>
+                  <span>{getFavoriteCount(work.id)}</span>
                 </button>
 
                 <div className="absolute inset-0 flex flex-col justify-end bg-black/45 p-6 opacity-0 transition-opacity group-hover:opacity-100">
@@ -545,6 +651,19 @@ export default function FeedPage() {
                   ) : (
                     <p className="secondary-copy mt-1 text-sm text-white/75">{getAuthorName(work)}</p>
                   )}
+                  {isSupabaseV2 && (
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold text-white/80">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1">
+                        <ThumbsUp size={13} /> {getLikeCount(work.id)}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1">
+                        <Heart size={13} /> {getFavoriteCount(work.id)}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1">
+                        <MessageCircle size={13} /> {getCommentCount(work.id)}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </article>
             ))}
@@ -554,18 +673,15 @@ export default function FeedPage() {
 
       {showNag && <NagModal forceOpen reason="like" onClose={() => setShowNag(false)} />}
 
-      {lightboxIndex !== null && processedWorks[lightboxIndex] && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
-          onClick={closeLightbox}
-        >
+      {activeWork && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={closeLightbox}>
           <div
-            className="relative flex max-h-[90vh] w-full max-w-[90vw] items-center justify-center"
+            className="relative grid max-h-[92vh] w-full max-w-6xl gap-4 overflow-auto lg:grid-cols-[minmax(0,1fr)_360px]"
             onClick={(event) => event.stopPropagation()}
           >
             <button
               onClick={closeLightbox}
-              className="absolute right-3 top-3 z-10 rounded-full bg-black/50 p-2 text-white backdrop-blur"
+              className="absolute right-3 top-3 z-20 rounded-full bg-black/50 p-2 text-white backdrop-blur"
               aria-label="Закрыть"
             >
               <X />
@@ -573,54 +689,84 @@ export default function FeedPage() {
 
             <button
               onClick={showPrev}
-              className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white backdrop-blur"
+              className="absolute left-3 top-1/2 z-20 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white backdrop-blur"
               aria-label="Предыдущая работа"
             >
               <ChevronLeft />
             </button>
 
-            <div className="max-h-full max-w-full">
-              <img
-                src={processedWorks[lightboxIndex].image_url}
-                alt={processedWorks[lightboxIndex].title}
-                className="max-h-[80vh] max-w-[90vw] rounded-2xl object-contain"
-              />
-              <div className="mt-3 flex flex-col gap-3 text-center text-white sm:flex-row sm:items-center sm:justify-between sm:text-left">
-                <div>
-                  <div className="font-semibold">{processedWorks[lightboxIndex].title}</div>
-                  {processedWorks[lightboxIndex].author_id ? (
-                    <Link
-                      href={`/profile/${processedWorks[lightboxIndex].author_id}`}
-                      className="secondary-copy text-sm text-white/75 transition hover:text-white"
-                    >
-                      {getAuthorName(processedWorks[lightboxIndex])}
-                    </Link>
-                  ) : (
-                    <div className="secondary-copy text-sm text-white/75">{getAuthorName(processedWorks[lightboxIndex])}</div>
-                  )}
+            <div className="flex min-h-[60vh] items-center justify-center">
+              {activeWork.image_url ? (
+                <img
+                  src={activeWork.image_url}
+                  alt={activeWork.title}
+                  className="max-h-[86vh] max-w-full rounded-2xl object-contain"
+                />
+              ) : (
+                <div className="flex h-[60vh] w-full items-center justify-center rounded-2xl bg-zinc-900 text-zinc-500">
+                  <ImageIcon className="h-10 w-10" />
                 </div>
-                <button
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    void toggleFavorite(processedWorks[lightboxIndex].id)
-                  }}
-                  className={`mx-auto inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold transition sm:mx-0 ${
-                    processedWorks[lightboxIndex].liked
-                      ? 'like-pop bg-red-500 text-white'
-                      : 'bg-white text-black hover:bg-red-500 hover:text-white'
-                  }`}
-                  disabled={!!togglingIds[processedWorks[lightboxIndex].id]}
-                  aria-pressed={processedWorks[lightboxIndex].liked ? 'true' : 'false'}
-                >
-                  <Heart size={16} className={processedWorks[lightboxIndex].liked ? 'fill-current' : ''} />
-                  {counts[processedWorks[lightboxIndex].id] ?? 0}
-                </button>
-              </div>
+              )}
             </div>
+
+            <aside className="rounded-3xl bg-white p-5 text-black">
+              <div className="pr-8">
+                <div className="font-semibold">{activeWork.title}</div>
+                {activeWork.author_id ? (
+                  <Link href={`/profile/${activeWork.author_id}`} className="secondary-copy text-sm text-zinc-500 transition hover:text-black">
+                    {getAuthorName(activeWork)}
+                  </Link>
+                ) : (
+                  <div className="secondary-copy text-sm text-zinc-500">{getAuthorName(activeWork)}</div>
+                )}
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {isSupabaseV2 && (
+                  <button
+                    onClick={() => void toggleLike(activeWork.id)}
+                    className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold transition ${
+                      activeWork.likedByCurrentUser ? 'bg-black text-white' : 'bg-zinc-100 text-black hover:bg-black hover:text-white'
+                    }`}
+                    disabled={!!togglingLikeIds[activeWork.id]}
+                    aria-pressed={activeWork.likedByCurrentUser ? 'true' : 'false'}
+                  >
+                    <ThumbsUp size={16} className={activeWork.likedByCurrentUser ? 'fill-current' : ''} />
+                    {activeStats.likes_count}
+                  </button>
+                )}
+                <button
+                  onClick={() => void toggleFavorite(activeWork.id)}
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold transition ${
+                    activeWork.liked ? 'like-pop bg-red-500 text-white' : 'bg-zinc-100 text-black hover:bg-red-500 hover:text-white'
+                  }`}
+                  disabled={!!togglingFavoriteIds[activeWork.id]}
+                  aria-pressed={activeWork.liked ? 'true' : 'false'}
+                >
+                  <Heart size={16} className={activeWork.liked ? 'fill-current' : ''} />
+                  {getFavoriteCount(activeWork.id)}
+                </button>
+                {isSupabaseV2 && (
+                  <span className="inline-flex items-center gap-2 rounded-full bg-zinc-100 px-4 py-2 text-sm font-bold text-zinc-600">
+                    <MessageCircle size={16} />
+                    {activeStats.comments_count}
+                  </span>
+                )}
+              </div>
+
+              {isSupabaseV2 && (
+                <ArtworkComments
+                  artworkId={activeWork.id}
+                  commentsEnabled={activeWork.comments_enabled ?? true}
+                  onStatsChange={(nextStats) => applyStatsUpdate(activeWork.id, nextStats)}
+                  className="mt-6"
+                />
+              )}
+            </aside>
 
             <button
               onClick={showNext}
-              className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white backdrop-blur"
+              className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white backdrop-blur lg:right-[384px]"
               aria-label="Следующая работа"
             >
               <ChevronRight />

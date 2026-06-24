@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
@@ -92,6 +92,35 @@ export default function Navbar() {
     }
   }, [user])
 
+  useEffect(() => {
+    if (!user) return
+
+    let mounted = true
+
+    async function refreshProfile() {
+      try {
+        const result = await getCurrentProfile()
+        if (!mounted) return
+
+        if (result.error) {
+          console.warn('Failed to refresh current profile:', result.error.message)
+          return
+        }
+
+        setRole(result.profile?.role ?? null)
+        setProfile(result.profile)
+      } catch (err) {
+        console.warn('Failed to refresh current profile:', err)
+      }
+    }
+
+    window.addEventListener('profile:updated', refreshProfile)
+    return () => {
+      mounted = false
+      window.removeEventListener('profile:updated', refreshProfile)
+    }
+  }, [user])
+
   const handleLogout = async () => {
     await supabase.auth.signOut()
     setUser(null)
@@ -141,7 +170,7 @@ export default function Navbar() {
                 pathname === '/admin' || pathname?.startsWith('/admin/') ? 'bg-black text-white' : 'text-slate-800'
               }`}
             >
-              Admin
+              Админ
             </Link>
           )}
         </div>
@@ -154,7 +183,7 @@ export default function Navbar() {
           <div className="flex shrink-0 items-center gap-2">
             <Link href="/profile" className="flex min-w-0 items-center gap-2 rounded-full transition hover:opacity-75">
               {avatarUrl ? (
-                <img src={avatarUrl} alt="Avatar" className="h-8 w-8 rounded-full border border-white object-cover" />
+                <img src={avatarUrl} alt="Аватар" className="h-8 w-8 rounded-full border border-white object-cover" />
               ) : (
                 <div className="flex h-8 w-8 items-center justify-center rounded-full bg-pink-600 text-xs font-bold text-white ring-2 ring-white/80">
                   {initials}
