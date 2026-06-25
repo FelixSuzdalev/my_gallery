@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import React, { useCallback, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
@@ -29,6 +29,8 @@ type Collection = {
   id: string
   title: string
   description?: string | null
+  cover_url?: string | null
+  visibility?: string | null
   created_at?: string | null
   items?: CollectionItem[]
 }
@@ -50,10 +52,16 @@ export default function FeaturedCollections() {
   const fetchCollections = useCallback(async () => {
     setLoading(true)
     try {
-      const { data: cols } = await supabase
+      let collectionsQuery = supabase
         .from('collections')
         .select('*')
         .order('created_at', { ascending: false })
+
+      if (isSupabaseV2) {
+        collectionsQuery = collectionsQuery.eq('visibility', 'public')
+      }
+
+      const { data: cols } = await collectionsQuery
 
       const rows = (cols ?? []) as CollectionRow[]
       if (rows.length === 0) {
@@ -214,7 +222,7 @@ export default function FeaturedCollections() {
             <p className="secondary-copy text-zinc-500">Кураторские наборы работ.</p>
           </div>
 
-          {isAdmin && (
+          {isAdmin && !isSupabaseV2 && (
             <button
               onClick={() => setShowEditor((value) => !value)}
               className="px-4 py-2 bg-black text-white rounded flex items-center gap-2"

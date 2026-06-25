@@ -9,6 +9,7 @@ import { getCurrentProfile, type CurrentProfile } from '@/lib/current-profile'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 import ProfileEditor from '@/components/ProfileEditor'
 import CreatorApplicationPanel from '@/components/CreatorApplicationPanel'
+import { V2CollectionManager } from '@/components/V2Collections'
 
 export default function MyProfilePage() {
   const router = useRouter()
@@ -119,6 +120,12 @@ export default function MyProfilePage() {
 
           {canApplyForCreator && <CreatorApplicationPanel profileId={profile.id} />}
         </div>
+
+        {isSupabaseV2 && (
+          <div className="lg:col-span-2">
+            <V2CollectionManager currentUserId={profile.id} role={profile.role} />
+          </div>
+        )}
       </div>
     </main>
   )

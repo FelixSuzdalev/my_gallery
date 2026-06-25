@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabase'
 import NagModal from '@/components/NagModal'
 import ProfileEditor from '@/components/ProfileEditor'
 import CreatorApplicationPanel from '@/components/CreatorApplicationPanel'
+import { PublicCollectionsBlock, V2CollectionManager } from '@/components/V2Collections'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 import {
   createOwnAction,
@@ -480,6 +481,18 @@ export default function PublicProfilePage() {
         {canShowCreatorApplication && (
           <div className="mb-8">
             <CreatorApplicationPanel profileId={profile.id} />
+          </div>
+        )}
+
+        {isOwner && isSupabaseV2 && (profile.role === 'creator' || profile.role === 'admin') && (
+          <div className="mb-8">
+            <V2CollectionManager currentUserId={profile.id} role={profile.role} />
+          </div>
+        )}
+
+        {!isOwner && isSupabaseV2 && (profile.role === 'creator' || profile.role === 'admin') && (
+          <div className="mb-8">
+            <PublicCollectionsBlock authorId={profile.id} title="Коллекции автора" />
           </div>
         )}
 
