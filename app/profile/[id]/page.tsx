@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
@@ -7,6 +7,7 @@ import { Edit3, Heart, Image as ImageIcon, Loader2, MessageCircle, ThumbsUp, Use
 import { supabase } from '@/lib/supabase'
 import NagModal from '@/components/NagModal'
 import ProfileEditor from '@/components/ProfileEditor'
+import CreatorApplicationPanel from '@/components/CreatorApplicationPanel'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 import {
   createOwnAction,
@@ -248,6 +249,9 @@ export default function PublicProfilePage() {
 
   const isOwner = Boolean(currentUserId && profile?.id === currentUserId)
   const canShowFollow = Boolean(isSupabaseV2 && currentUserId && profile && !isOwner && profile.is_public !== false && !profile.deleted_at)
+  const canShowCreatorApplication = Boolean(
+    isSupabaseV2 && isOwner && profile?.role !== 'creator' && profile?.role !== 'admin'
+  )
 
   async function refreshCount(artworkId: string) {
     if (isSupabaseV2) {
@@ -473,6 +477,12 @@ export default function PublicProfilePage() {
       </section>
 
       <div className="mx-auto max-w-7xl px-6 py-10">
+        {canShowCreatorApplication && (
+          <div className="mb-8">
+            <CreatorApplicationPanel profileId={profile.id} />
+          </div>
+        )}
+
         {works.length === 0 ? (
           <div className="rounded-[28px] border border-dashed border-zinc-300 p-10 text-center text-zinc-500">
             У автора пока нет опубликованных работ.

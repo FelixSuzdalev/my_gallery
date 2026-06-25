@@ -3,13 +3,15 @@
 import React, { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { LayoutDashboard, Loader2, Paintbrush, Users, UserRoundCog } from 'lucide-react'
+import { FileCheck2, LayoutDashboard, Loader2, Paintbrush, Users, UserRoundCog } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 
 const ADMIN_NAV = [
   { href: '/admin', label: 'Обзор', icon: LayoutDashboard },
   { href: '/admin/artworks', label: 'Работы', icon: Paintbrush },
   { href: '/admin/authors', label: 'Авторы', icon: UserRoundCog },
+  ...(isSupabaseV2 ? [{ href: '/admin/creator-applications', label: 'Заявки авторов', icon: FileCheck2 }] : []),
   { href: '/admin/users', label: 'Пользователи', icon: Users },
 ]
 

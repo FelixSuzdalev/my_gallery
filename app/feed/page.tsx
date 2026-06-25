@@ -52,6 +52,19 @@ function getAuthorName(work: Artwork) {
   return work.profiles?.full_name || work.profiles?.username || work.author_id || 'Автор'
 }
 
+function shuffleArtworks<T>(items: T[]) {
+  const shuffled = [...items]
+
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1))
+    const item = shuffled[index]
+    shuffled[index] = shuffled[randomIndex]
+    shuffled[randomIndex] = item
+  }
+
+  return shuffled
+}
+
 export default function FeedPage() {
   const [works, setWorks] = useState<Artwork[]>([])
   const [loading, setLoading] = useState(true)
@@ -228,8 +241,10 @@ export default function FeedPage() {
         return nextCounts
       })
       setFavMap(favMapObj)
+      const orderedArtworks = isSupabaseV2 ? shuffleArtworks(artworks) : artworks
+
       setWorks(
-        artworks.map((work) => ({
+        orderedArtworks.map((work) => ({
           ...work,
           liked: Boolean(favMapObj[work.id]),
           likedByCurrentUser: Boolean(likeMapObj[work.id]),
@@ -304,6 +319,8 @@ export default function FeedPage() {
   const getCommentCount = useCallback((artworkId: string) => getStats(stats, artworkId).comments_count, [stats])
 
   const processedWorks = useMemo(() => {
+    if (isSupabaseV2) return works
+
     const sortedWorks = [...works]
 
     if (sortByEnum === SortByEnum.Newest) {

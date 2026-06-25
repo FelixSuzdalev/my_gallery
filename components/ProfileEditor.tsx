@@ -1,8 +1,9 @@
 'use client'
 
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Loader2, Save, Upload } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 
 type EditableProfile = {
   id: string
@@ -33,13 +34,67 @@ export default function ProfileEditor({ profile, onSaved, onCancel }: Props) {
   const [isPublic, setIsPublic] = useState(profile.is_public ?? true)
   const [avatarUrl, setAvatarUrl] = useState(profile.avatar_url ?? '')
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null)
+  const [nameWarning, setNameWarning] = useState<string | null>(null)
+  const [checkingName, setCheckingName] = useState(false)
   const [saving, setSaving] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
-  const avatarPreviewUrl = useMemo(() => {
-    if (!avatarFile) return null
-    return URL.createObjectURL(avatarFile)
+  useEffect(() => {
+    if (!avatarFile) {
+      setAvatarPreviewUrl(null)
+      return
+    }
+
+    const objectUrl = URL.createObjectURL(avatarFile)
+    setAvatarPreviewUrl(objectUrl)
+
+    return () => {
+      URL.revokeObjectURL(objectUrl)
+    }
   }, [avatarFile])
+
+  useEffect(() => {
+    if (!isSupabaseV2) return
+
+    const normalizedName = normalizeFullName(fullName)
+    if (!normalizedName) {
+      setNameWarning(null)
+      setCheckingName(false)
+      return
+    }
+
+    let mounted = true
+    setCheckingName(true)
+
+    const timer = window.setTimeout(async () => {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('full_name', normalizedName)
+        .eq('is_public', true)
+        .neq('id', profile.id)
+        .limit(1)
+
+      if (!mounted) return
+      if (error) {
+        console.warn('Не удалось проверить совпадение имени профиля:', error.message)
+        setNameWarning(null)
+      } else {
+        setNameWarning(
+          data && data.length > 0
+            ? 'Профиль с таким отображаемым именем уже существует. Рекомендуется выбрать узнаваемое имя или псевдоним.'
+            : null
+        )
+      }
+      setCheckingName(false)
+    }, 350)
+
+    return () => {
+      mounted = false
+      window.clearTimeout(timer)
+    }
+  }, [fullName, profile.id])
 
   function handleAvatarChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null
@@ -57,10 +112,14 @@ export default function ProfileEditor({ profile, onSaved, onCancel }: Props) {
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
 
+    const normalizedFullName = normalizeFullName(fullName)
+    const normalizedUsername = normalizeUsername(username)
+    const normalizedBio = bio.trim()
+
     const validationError = validateProfile({
-      fullName,
-      username,
-      bio,
+      fullName: normalizedFullName,
+      username: normalizedUsername,
+      bio: normalizedBio,
     })
 
     if (validationError) {
@@ -83,6 +142,11 @@ export default function ProfileEditor({ profile, onSaved, onCancel }: Props) {
         throw new Error('Редактировать можно только свой профиль.')
       }
 
+      if (isSupabaseV2) {
+        const usernameAvailable = await checkUsernameAvailable(normalizedUsername, user.id)
+        if (!usernameAvailable) throw new Error('Такое имя пользователя уже занято.')
+      }
+
       if (avatarFile) {
         const uploaded = await uploadAvatar(user.id, avatarFile)
         uploadedPath = uploaded.path
@@ -90,9 +154,9 @@ export default function ProfileEditor({ profile, onSaved, onCancel }: Props) {
       }
 
       const patch = {
-        full_name: fullName.trim(),
-        username: username.trim(),
-        bio: bio.trim() || null,
+        full_name: normalizedFullName,
+        username: normalizedUsername,
+        bio: normalizedBio || null,
         avatar_url: nextAvatarUrl,
         is_public: isPublic,
       }
@@ -127,7 +191,6 @@ export default function ProfileEditor({ profile, onSaved, onCancel }: Props) {
       alert('Не удалось сохранить профиль: ' + getProfileErrorMessage(error))
     } finally {
       setSaving(false)
-      if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl)
     }
   }
 
@@ -144,6 +207,14 @@ export default function ProfileEditor({ profile, onSaved, onCancel }: Props) {
           placeholder="Как вас показывать в галерее"
           required
         />
+        {nameWarning && (
+          <span className="mt-2 block rounded-2xl bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+            {nameWarning}
+          </span>
+        )}
+        {!nameWarning && checkingName && (
+          <span className="mt-2 block text-xs leading-5 text-zinc-400">Проверяем совпадения имени...</span>
+        )}
       </label>
 
       <label className="block">
@@ -156,7 +227,7 @@ export default function ProfileEditor({ profile, onSaved, onCancel }: Props) {
           required
         />
         <span className="mt-2 block text-xs leading-5 text-zinc-500">
-          Латиница, цифры, точка, подчёркивание или дефис. От 3 до 32 символов.
+          Латиница, цифры, подчёркивание или дефис. От 3 до 32 символов.
         </span>
       </label>
 
@@ -226,17 +297,36 @@ export default function ProfileEditor({ profile, onSaved, onCancel }: Props) {
   )
 }
 
+function normalizeFullName(value: string) {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function normalizeUsername(value: string) {
+  return value.trim().toLowerCase()
+}
+
 function validateProfile({ fullName, username, bio }: { fullName: string; username: string; bio: string }) {
-  const name = fullName.trim()
-  const handle = username.trim()
+  const name = normalizeFullName(fullName)
+  const handle = normalizeUsername(username)
   const text = bio.trim()
 
-  if (name.length < 2 || name.length > 80) return 'Имя должно быть от 2 до 80 символов.'
-  if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(handle)) {
-    return 'Имя пользователя должно быть от 3 до 32 символов: латиница, цифры, точка, подчёркивание или дефис.'
+  if (!name) return 'Отображаемое имя обязательно.'
+  if (name.length > 80) return 'Имя должно быть не длиннее 80 символов.'
+  if (!/^[a-z0-9_-]{3,32}$/.test(handle)) {
+    return 'Имя пользователя должно быть от 3 до 32 символов: латиница, цифры, подчёркивание или дефис.'
   }
   if (text.length > 500) return 'Описание профиля должно быть не длиннее 500 символов.'
   return null
+}
+
+async function checkUsernameAvailable(username: string, currentUserId: string) {
+  const { data, error } = await supabase.rpc('is_username_available', {
+    p_username: username,
+    p_current_user_id: currentUserId,
+  })
+
+  if (error) throw error
+  return data === true
 }
 
 function validateAvatarFile(file: File | null) {
