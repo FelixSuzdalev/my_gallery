@@ -8,7 +8,6 @@ import {
   canArtworkHavePublicMedia,
   deletePublicArtworkMedia,
   getPrimaryArtworkMedia,
-  moveArtworkToNonPublicState,
   type ArtworkMediaRow,
   type ArtworkStatus,
   type ArtworkVisibility,
@@ -45,6 +44,11 @@ type ArtworkPayload = {
   visibility?: ArtworkVisibility
   comments_enabled?: boolean
 }
+
+type V2ArtworkUpdatePayload = Pick<
+  ArtworkPayload,
+  'title' | 'description' | 'tags' | 'status' | 'visibility' | 'comments_enabled'
+>
 
 type UploadedArtworkImage = {
   publicUrl: string
@@ -226,16 +230,7 @@ export default function ArtworkForm({ initial, onDone }: Props) {
             return
           }
 
-          if (!isSavingPublic && hasExistingImage) {
-            const confirmed = confirm(
-              'Публичное изображение будет удалено, потому что работа станет черновиком, скрытой, архивной или непубличной. Продолжить?'
-            )
-            if (!confirmed) return
-          }
-
           await updateV2Artwork(initial.id, v2Payload, imageFile, {
-            currentImageUrl: imageUrl,
-            hasPublicMedia: hasExistingImage,
             hasPublishableMedia: hasPublishableImage,
           })
         } else {
@@ -549,7 +544,7 @@ async function updateV2Artwork(
   artworkId: string,
   payload: ArtworkPayload,
   imageFile: File | null,
-  options: { currentImageUrl?: string | null; hasPublicMedia?: boolean; hasPublishableMedia?: boolean } = {}
+  options: { hasPublishableMedia?: boolean } = {}
 ) {
   if (!payload.author_id) throw new Error('Выберите автора работы.')
 
@@ -571,20 +566,8 @@ async function updateV2Artwork(
   }
 
   if (!canUseArtworkMedia(payload)) {
-    await moveArtworkToNonPublicState(
-      artworkId,
-      {
-        status: payload.status ?? 'draft',
-        visibility: payload.visibility ?? 'private',
-      },
-      options.hasPublicMedia ? { image_url: options.currentImageUrl } : {},
-      {
-        title: payload.title,
-        description: payload.description,
-        tags: payload.tags,
-        comments_enabled: payload.comments_enabled,
-      }
-    )
+    const { error } = await supabase.from('artworks').update(getV2ArtworkUpdatePayload(payload)).eq('id', artworkId)
+    if (error) throw error
     return
   }
 
@@ -593,7 +576,7 @@ async function updateV2Artwork(
   }
 
   if (!imageFile) {
-    const { error } = await supabase.from('artworks').update(payload).eq('id', artworkId)
+    const { error } = await supabase.from('artworks').update(getV2ArtworkUpdatePayload(payload)).eq('id', artworkId)
     if (error) throw error
     return
   }
@@ -641,7 +624,7 @@ async function updateV2Artwork(
     const { error: artworkUpdateError } = await supabase
       .from('artworks')
       .update({
-        ...payload,
+        ...getV2ArtworkUpdatePayload(payload),
         image_url: uploadedImage.publicUrl,
       })
       .eq('id', artworkId)
@@ -656,6 +639,17 @@ async function updateV2Artwork(
     if (createdMediaRowId) await deleteArtworkMediaRow(createdMediaRowId)
     if (replacedMediaRow) await restoreArtworkMediaRow(replacedMediaRow)
     throw error
+  }
+}
+
+function getV2ArtworkUpdatePayload(payload: ArtworkPayload): V2ArtworkUpdatePayload {
+  return {
+    title: payload.title,
+    description: payload.description,
+    tags: payload.tags,
+    status: payload.status,
+    visibility: payload.visibility,
+    comments_enabled: payload.comments_enabled,
   }
 }
 
