@@ -1,11 +1,12 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
-import { ArrowRight, Check, Loader2, Lock, Mail, UserRound, X } from 'lucide-react'
+import { ArrowRight, Check, Eye, EyeOff, Loader2, Lock, Mail, UserRound, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 
 type AuthMode = 'login' | 'register'
 
@@ -67,6 +68,8 @@ export default function AuthForm({ initialMode = 'login' }: { initialMode?: Auth
   })
   const router = useRouter()
   const mounted = useRef(true)
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const isLogin = state.mode === 'login'
 
   const passwordChecks = useMemo(() => getPasswordChecks(state.password), [state.password])
@@ -112,6 +115,24 @@ export default function AuthForm({ initialMode = 'login' }: { initialMode?: Auth
           password: state.password,
         })
         if (error) throw error
+
+        if (isSupabaseV2) {
+          const { data: userData } = await supabase.auth.getUser()
+          const userId = userData.user?.id
+          if (userId) {
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('full_name, username')
+              .eq('id', userId)
+              .maybeSingle()
+
+            if (!profile?.full_name || !profile?.username) {
+              router.push('/profile?welcome=1')
+              return
+            }
+          }
+        }
+
         router.push('/feed')
       } else {
         const origin = window.location.origin
@@ -227,14 +248,22 @@ export default function AuthForm({ initialMode = 'login' }: { initialMode?: Auth
               <label className="relative block">
                 <Lock className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-zinc-400" />
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   value={state.password}
                   onChange={handleChange('password')}
                   required
                   minLength={isLogin ? 6 : 8}
                   placeholder="Пароль"
-                  className={fieldClass}
+                  className={`${fieldClass} pr-14`}
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((value) => !value)}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full p-1 text-zinc-500 transition hover:bg-zinc-100 hover:text-black"
+                  aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
               </label>
 
               {!isLogin && (
@@ -242,14 +271,22 @@ export default function AuthForm({ initialMode = 'login' }: { initialMode?: Auth
                   <label className="relative block">
                     <Lock className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-zinc-400" />
                     <input
-                      type="password"
+                      type={showConfirmPassword ? 'text' : 'password'}
                       value={state.confirmPassword}
                       onChange={handleChange('confirmPassword')}
                       required
                       minLength={8}
                       placeholder="Повторите пароль"
-                      className={fieldClass}
+                      className={`${fieldClass} pr-14`}
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((value) => !value)}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full p-1 text-zinc-500 transition hover:bg-zinc-100 hover:text-black"
+                      aria-label={showConfirmPassword ? 'Скрыть повтор пароля' : 'Показать повтор пароля'}
+                    >
+                      {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
                   </label>
 
                   <div className="grid gap-2 rounded-[24px] bg-zinc-50 p-4">

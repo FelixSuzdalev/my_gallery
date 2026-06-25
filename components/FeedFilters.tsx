@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Filter, Search, SlidersHorizontal, X } from 'lucide-react'
 import { SortByEnum } from '@/app/core/models/types'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 
 interface Props {
   activeTag: string
@@ -45,7 +46,8 @@ export default function FeedFilters({
     return [ALL_TAG, ...Array.from(new Set(source)).filter(Boolean)]
   }, [availableTags])
 
-  const hasActiveFilters = Boolean(query.trim()) || activeTag !== ALL_TAG || sortBy !== SortByEnum.Newest
+  const defaultSort = isSupabaseV2 ? SortByEnum.Random : SortByEnum.Newest
+  const hasActiveFilters = Boolean(query.trim()) || activeTag !== ALL_TAG || sortBy !== defaultSort
 
   useEffect(() => {
     if (debounceRef.current) window.clearTimeout(debounceRef.current)
@@ -73,8 +75,8 @@ export default function FeedFilters({
     setQuery('')
     setSearchQuery('')
     setActiveTag(ALL_TAG)
-    setSortBy(SortByEnum.Newest)
-    notify({ tag: ALL_TAG, search: '', sortBy: SortByEnum.Newest })
+    setSortBy(defaultSort)
+    notify({ tag: ALL_TAG, search: '', sortBy: defaultSort })
   }
 
   function handleTagClick(tag: string) {
@@ -154,6 +156,7 @@ export default function FeedFilters({
                   }}
                   className="appearance-none rounded-full border border-zinc-200 bg-white py-3 pl-4 pr-10 text-sm font-semibold text-black outline-none transition hover:bg-zinc-100 focus:border-black"
                 >
+                  {isSupabaseV2 && <option value={SortByEnum.Random}>Случайный порядок</option>}
                   <option value={SortByEnum.Newest}>Сначала новые</option>
                   <option value={SortByEnum.Popular}>По популярности</option>
                   <option value={SortByEnum.Trending}>В тренде</option>

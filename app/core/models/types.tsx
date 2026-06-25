@@ -1,4 +1,5 @@
 export enum SortByEnum {
+  Random = 'random',
   Popular = 'popular',
   Newest = 'newest',
   Trending = 'trending'

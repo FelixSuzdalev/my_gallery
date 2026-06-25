@@ -71,7 +71,7 @@ export default function FeedPage() {
   const [availableTags, setAvailableTags] = useState<string[]>([])
   const [activeTag, setActiveTag] = useState(ALL_TAG)
   const [searchQuery, setSearchQuery] = useState('')
-  const [sortByEnum, setSortByEnum] = useState<SortByEnum>(SortByEnum.Newest)
+  const [sortByEnum, setSortByEnum] = useState<SortByEnum>(isSupabaseV2 ? SortByEnum.Random : SortByEnum.Newest)
   const [showNag, setShowNag] = useState(false)
   const [togglingFavoriteIds, setTogglingFavoriteIds] = useState<Record<string, boolean>>({})
   const [togglingLikeIds, setTogglingLikeIds] = useState<Record<string, boolean>>({})
@@ -241,7 +241,7 @@ export default function FeedPage() {
         return nextCounts
       })
       setFavMap(favMapObj)
-      const orderedArtworks = isSupabaseV2 ? shuffleArtworks(artworks) : artworks
+      const orderedArtworks = isSupabaseV2 && sortBy === SortByEnum.Random ? shuffleArtworks(artworks) : artworks
 
       setWorks(
         orderedArtworks.map((work) => ({

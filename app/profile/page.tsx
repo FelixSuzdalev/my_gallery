@@ -13,9 +13,20 @@ import { V2CollectionManager } from '@/components/V2Collections'
 
 export default function MyProfilePage() {
   const router = useRouter()
+  const [showWelcome, setShowWelcome] = useState(false)
   const [profile, setProfile] = useState<CurrentProfile | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!isSupabaseV2) return
+
+    const timer = window.setTimeout(() => {
+      setShowWelcome(new URLSearchParams(window.location.search).get('welcome') === '1')
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -88,6 +99,23 @@ export default function MyProfilePage() {
     <main className="min-h-screen bg-white px-6 py-10 text-black">
       <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
         <section className="rounded-[28px] border border-zinc-200 bg-white p-5 shadow-sm">
+          {showWelcome && (
+            <div className="mb-5 rounded-[24px] border border-zinc-200 bg-zinc-50 p-4">
+              <p className="text-sm font-semibold text-zinc-500">Первый вход</p>
+              <h2 className="mt-1 text-xl font-black">Заполните профиль, когда будете готовы</h2>
+              <p className="secondary-copy mt-2 text-sm text-zinc-600">
+                Имя и username помогут другим пользователям узнавать вас в галерее. Аватар можно добавить позже.
+              </p>
+              <button
+                type="button"
+                onClick={() => router.push('/feed')}
+                className="mt-4 rounded-full border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100"
+              >
+                Пропустить сейчас
+              </button>
+            </div>
+          )}
+
           <div className="mb-5 border-b border-zinc-100 pb-5">
             <p className="text-sm text-zinc-500">Мой профиль</p>
             <h1 className="text-3xl font-black tracking-tight">Редактирование профиля</h1>

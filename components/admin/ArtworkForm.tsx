@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Image as ImageIcon, Loader2, Save, Trash2 } from 'lucide-react'
@@ -32,6 +32,7 @@ type AuthorOption = {
   id: string
   full_name?: string | null
   username?: string | null
+  role?: 'user' | 'creator' | 'admin' | null
 }
 
 type ArtworkPayload = {
@@ -78,6 +79,9 @@ export default function ArtworkForm({ initial, onDone }: Props) {
   const [hasPrimaryMedia, setHasPrimaryMedia] = useState(false)
   const [checkingMedia, setCheckingMedia] = useState(false)
   const [authors, setAuthors] = useState<AuthorOption[]>([])
+  const [currentAuthor, setCurrentAuthor] = useState<AuthorOption | null>(null)
+  const [authorSearch, setAuthorSearch] = useState('')
+  const [authorSearchLoading, setAuthorSearchLoading] = useState(false)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
 
   const isEditing = Boolean(initial?.id)
@@ -87,22 +91,90 @@ export default function ArtworkForm({ initial, onDone }: Props) {
   const hasPublishableImage = Boolean(imageUrl) && hasPrimaryMedia
 
   useEffect(() => {
+    if (isSupabaseV2) return
+
     let mounted = true
 
     async function loadAuthors() {
-      const profilesQuery = supabase.from('profiles').select('id, full_name, username')
-      const { data } = await (isSupabaseV2
-        ? profilesQuery.in('role', ['creator', 'admin']).order('full_name')
-        : profilesQuery.eq('role', 'creator').order('full_name'))
+      const { data } = await supabase
+        .from('profiles')
+        .select('id, full_name, username, role')
+        .eq('role', 'creator')
+        .order('full_name')
 
       if (mounted) setAuthors((data ?? []) as AuthorOption[])
     }
 
-    loadAuthors()
+    void loadAuthors()
     return () => {
       mounted = false
     }
   }, [])
+
+  useEffect(() => {
+    if (!isSupabaseV2 || !authorId) {
+      setCurrentAuthor(null)
+      return
+    }
+
+    let mounted = true
+
+    async function loadCurrentAuthor() {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, full_name, username, role')
+        .eq('id', authorId)
+        .maybeSingle()
+
+      if (!mounted) return
+      if (error) console.warn('Не удалось загрузить текущего автора:', error.message)
+      setCurrentAuthor((data as AuthorOption | null) ?? null)
+    }
+
+    void loadCurrentAuthor()
+    return () => {
+      mounted = false
+    }
+  }, [authorId])
+
+  useEffect(() => {
+    if (!isSupabaseV2) return
+
+    const query = authorSearch.trim()
+    if (query.length < 2) {
+      setAuthors([])
+      setAuthorSearchLoading(false)
+      return
+    }
+
+    let mounted = true
+    setAuthorSearchLoading(true)
+
+    const timer = window.setTimeout(async () => {
+      const pattern = `%${query.replace(/%/g, '\\%')}%`
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, full_name, username, role')
+        .is('deleted_at', null)
+        .or(`full_name.ilike.${pattern},username.ilike.${pattern}`)
+        .order('full_name')
+        .limit(12)
+
+      if (!mounted) return
+      if (error) {
+        console.warn('Не удалось найти авторов:', error.message)
+        setAuthors([])
+      } else {
+        setAuthors((data ?? []) as AuthorOption[])
+      }
+      setAuthorSearchLoading(false)
+    }, 300)
+
+    return () => {
+      mounted = false
+      window.clearTimeout(timer)
+    }
+  }, [authorSearch])
 
   useEffect(() => {
     if (!imageFile) {
@@ -278,30 +350,85 @@ export default function ArtworkForm({ initial, onDone }: Props) {
             label="Автор"
             hint={
               isV2Editing
-                ? 'После создания автора нельзя изменить: он связан с путём загруженного изображения.'
-                : undefined
+                ? 'Автор существующей V2-работы не меняется: он связан с правами и путём загруженного изображения.'
+                : isSupabaseV2
+                  ? 'Начните вводить имя или username. Владелец работы должен иметь роль creator или admin.'
+                  : undefined
             }
           >
-            <select
-              value={authorId}
-              onChange={(event) => setAuthorId(event.target.value)}
-              className={fieldClass}
-              required={isSupabaseV2}
-              disabled={isV2Editing}
-            >
-              {isSupabaseV2 ? (
-                <option value="" disabled>
-                  Выберите автора
-                </option>
-              ) : (
+            {isSupabaseV2 ? (
+              <div className="space-y-3">
+                {currentAuthor && (
+                  <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
+                    <div className="text-sm font-semibold text-zinc-900">{getAuthorLabel(currentAuthor)}</div>
+                    <div className="text-xs text-zinc-500">Текущий автор · {currentAuthor.role ?? 'role не задана'}</div>
+                  </div>
+                )}
+
+                {!isV2Editing && (
+                  <>
+                    <input
+                      type="search"
+                      value={authorSearch}
+                      onChange={(event) => setAuthorSearch(event.target.value)}
+                      className={fieldClass}
+                      placeholder="Найти автора по имени или username"
+                      required={!authorId}
+                    />
+
+                    <div className="rounded-2xl border border-zinc-200 bg-white p-2">
+                      {authorSearch.trim().length < 2 ? (
+                        <div className="p-4 text-sm text-zinc-500">Введите минимум 2 символа для поиска.</div>
+                      ) : authorSearchLoading ? (
+                        <div className="flex items-center gap-2 p-4 text-sm text-zinc-500">
+                          <Loader2 className="h-4 w-4 animate-spin" /> Ищем автора...
+                        </div>
+                      ) : authors.length === 0 ? (
+                        <div className="p-4 text-sm text-zinc-500">Пользователи не найдены.</div>
+                      ) : (
+                        <div className="grid gap-2">
+                          {authors.map((author) => {
+                            const canSelect = author.role === 'creator' || author.role === 'admin'
+                            const selected = author.id === authorId
+                            return (
+                              <button
+                                key={author.id}
+                                type="button"
+                                disabled={!canSelect}
+                                onClick={() => {
+                                  if (!canSelect) return
+                                  setAuthorId(author.id)
+                                  setCurrentAuthor(author)
+                                }}
+                                className={`rounded-2xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                                  selected ? 'border-black bg-zinc-100' : 'border-zinc-200 hover:border-black'
+                                }`}
+                              >
+                                <div className="text-sm font-semibold text-zinc-900">{getAuthorLabel(author)}</div>
+                                <div className="text-xs text-zinc-500">
+                                  {canSelect
+                                    ? `Можно выбрать · ${author.role}`
+                                    : 'Роль user: сначала назначьте пользователя автором в админке'}
+                                </div>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              <select value={authorId} onChange={(event) => setAuthorId(event.target.value)} className={fieldClass}>
                 <option value="">Без автора</option>
-              )}
-              {authors.map((author) => (
-                <option key={author.id} value={author.id}>
-                  {author.full_name ?? author.username ?? author.id}
-                </option>
-              ))}
-            </select>
+                {authors.map((author) => (
+                  <option key={author.id} value={author.id}>
+                    {getAuthorLabel(author)}
+                  </option>
+                ))}
+              </select>
+            )}
           </Field>
 
           {isSupabaseV2 && (
@@ -460,6 +587,10 @@ export default function ArtworkForm({ initial, onDone }: Props) {
       </div>
     </form>
   )
+}
+
+function getAuthorLabel(author: AuthorOption) {
+  return author.full_name || (author.username ? '@' + author.username : author.id)
 }
 
 function canUseArtworkMedia(payload: Pick<ArtworkPayload, 'status' | 'visibility'>) {

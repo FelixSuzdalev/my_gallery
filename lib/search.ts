@@ -10,6 +10,7 @@ export type ArtworkRow = {
   tags?: string[]
   created_at?: string
   author_id?: string
+  description?: string | null
   profiles?: { username?: string; full_name?: string }
   liked?: boolean
   _favorites_count?: number
@@ -30,6 +31,7 @@ export type SearchOptions = {
   limit?: number
   offset?: number
   sortBy?: SortByEnum
+  authorId?: string
 }
 
 const ALL_TAG = '\u0412\u0441\u0435'
@@ -110,7 +112,7 @@ async function loadCurrentUserFavorites(artworkIds: string[]) {
 }
 
 export async function searchArtworks(opts: SearchOptions = {}) {
-  const { q, tag, tags, limit = 200, offset = 0, sortBy = SortByEnum.Newest } = opts
+  const { q, tag, tags, limit = 200, offset = 0, sortBy = SortByEnum.Newest, authorId } = opts
 
   const idMap = new Map<string, ArtworkRow>()
   const hasQuery = Boolean(q?.trim())
@@ -118,7 +120,7 @@ export async function searchArtworks(opts: SearchOptions = {}) {
   if (hasQuery) {
     try {
       const pattern = ilikePattern(q ?? '')
-      const orCond = `title.ilike.${pattern},profiles.username.ilike.${pattern},profiles.full_name.ilike.${pattern}`
+      const orCond = `title.ilike.${pattern},description.ilike.${pattern},profiles.username.ilike.${pattern},profiles.full_name.ilike.${pattern}`
       const { data, error } = await publicArtworkQuery()
         .or(orCond)
         .range(offset, offset + limit - 1)
@@ -173,9 +175,17 @@ export async function searchArtworks(opts: SearchOptions = {}) {
     }
   }
 
+  if (authorId && (hasQuery || tag || (tags && tags.length > 0))) {
+    Array.from(idMap.keys()).forEach((id) => {
+      if (idMap.get(id)?.author_id !== authorId) idMap.delete(id)
+    })
+  }
+
   if (!hasQuery && !tag && (!tags || tags.length === 0)) {
     try {
-      const { data, error } = await publicArtworkQuery()
+      let baseQuery = publicArtworkQuery()
+      if (authorId) baseQuery = baseQuery.eq('author_id', authorId)
+      const { data, error } = await baseQuery
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1)
       if (!error) ((data || []) as ArtworkRow[]).forEach((row) => idMap.set(row.id, row))
@@ -199,7 +209,12 @@ export async function searchArtworks(opts: SearchOptions = {}) {
 
   const now = Date.now()
   const sorted = results.slice()
-  if (sortBy === SortByEnum.Newest) {
+  if (sortBy === SortByEnum.Random) {
+    for (let index = sorted.length - 1; index > 0; index -= 1) {
+      const randomIndex = Math.floor(Math.random() * (index + 1))
+      ;[sorted[index], sorted[randomIndex]] = [sorted[randomIndex], sorted[index]]
+    }
+  } else if (sortBy === SortByEnum.Newest) {
     sorted.sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
   } else if (sortBy === SortByEnum.Popular) {
     sorted.sort((a, b) => (b._favorites_count ?? 0) - (a._favorites_count ?? 0))
