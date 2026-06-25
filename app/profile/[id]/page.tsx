@@ -10,6 +10,7 @@ import ProfileEditor from '@/components/ProfileEditor'
 import CreatorApplicationPanel from '@/components/CreatorApplicationPanel'
 import { PublicCollectionsBlock, V2CollectionManager } from '@/components/V2Collections'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
+import { useDevRolePreview } from '@/lib/dev-role-preview'
 import {
   createOwnAction,
   deleteOwnAction,
@@ -83,6 +84,7 @@ export default function PublicProfilePage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
+  const { effectiveRole } = useDevRolePreview(isSupabaseV2 ? profile?.role ?? null : null)
 
   const applyStatsUpdate = useCallback((artworkId: string, nextStats: ArtworkStatsCounts) => {
     setStats((state) => ({ ...state, [artworkId]: nextStats }))
@@ -248,10 +250,11 @@ export default function PublicProfilePage() {
     return Object.values(counts).reduce((sum, count) => sum + count, 0)
   }, [counts, stats])
 
+  const displayRole = isSupabaseV2 ? effectiveRole ?? profile?.role ?? null : profile?.role ?? null
   const isOwner = Boolean(currentUserId && profile?.id === currentUserId)
   const canShowFollow = Boolean(isSupabaseV2 && currentUserId && profile && !isOwner && profile.is_public !== false && !profile.deleted_at)
   const canShowCreatorApplication = Boolean(
-    isSupabaseV2 && isOwner && profile?.role !== 'creator' && profile?.role !== 'admin'
+    isSupabaseV2 && isOwner && displayRole !== 'creator' && displayRole !== 'admin'
   )
 
   async function refreshCount(artworkId: string) {
@@ -484,13 +487,13 @@ export default function PublicProfilePage() {
           </div>
         )}
 
-        {isOwner && isSupabaseV2 && (profile.role === 'creator' || profile.role === 'admin') && (
+        {isOwner && isSupabaseV2 && (displayRole === 'creator' || displayRole === 'admin') && (
           <div className="mb-8">
-            <V2CollectionManager currentUserId={profile.id} role={profile.role} />
+            <V2CollectionManager currentUserId={profile.id} role={displayRole} />
           </div>
         )}
 
-        {!isOwner && isSupabaseV2 && (profile.role === 'creator' || profile.role === 'admin') && (
+        {!isOwner && isSupabaseV2 && (displayRole === 'creator' || displayRole === 'admin') && (
           <div className="mb-8">
             <PublicCollectionsBlock authorId={profile.id} title="Коллекции автора" />
           </div>

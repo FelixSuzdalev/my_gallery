@@ -7,6 +7,7 @@ import Navbar from "@/components/Navbar";
 import NagModal from "@/components/NagModal";
 import Footer from "@/components/Footer"; // если хочешь Footer глобально; можно убрать, если используешь в page
 import ScrollProgress from "@/components/ScrollProgress";
+import DevRolePreview from "@/components/DevRolePreview";
 
 
 export const metadata: Metadata = {
@@ -44,6 +45,7 @@ export default function RootLayout({
 
           {/* модалка вынесена в layout — теперь её таймер/логика сработают надёжно */}
           <NagModal />
+          <DevRolePreview />
         </div>
       </body>
     </html>

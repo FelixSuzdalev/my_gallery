@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
@@ -7,6 +7,8 @@ import { Loader2, LogOut } from 'lucide-react'
 import { usePathname, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { getCurrentProfile, type CurrentProfile } from '@/lib/current-profile'
+import { useDevRolePreview } from '@/lib/dev-role-preview'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 
 const NAV_ITEMS = [
   { name: 'РАБОТЫ', href: '/feed' },
@@ -138,7 +140,10 @@ export default function Navbar() {
     (typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : null)
   const displayName = fullName || user?.email?.split('@')[0]
   const initials = (displayName || user?.email || 'U').slice(0, 2).toUpperCase()
-  const isAdmin = role === 'admin'
+  const { effectiveRole, previewRole } = useDevRolePreview(role)
+  const displayRole = isSupabaseV2 ? effectiveRole : role
+  const isAdmin = displayRole === 'admin'
+  const isPreviewingRole = isSupabaseV2 && process.env.NODE_ENV === 'development' && previewRole !== 'real'
 
   return (
     <nav className="sticky top-0 z-50 flex w-full justify-center px-4 py-5">
@@ -170,7 +175,7 @@ export default function Navbar() {
                 pathname === '/admin' || pathname?.startsWith('/admin/') ? 'bg-black text-white' : 'text-slate-800'
               }`}
             >
-              Админ
+              {isPreviewingRole ? 'Админ preview' : 'Админ'}
             </Link>
           )}
         </div>

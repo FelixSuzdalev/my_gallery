@@ -3,6 +3,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Image as ImageIcon, Loader2, Save, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import ArtworkTagSelector from '@/components/admin/ArtworkTagSelector'
+import { normalizeTagList, validateArtworkTags } from '@/lib/tag-catalog'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 import {
   canArtworkHavePublicMedia,
@@ -71,6 +73,7 @@ export default function ArtworkForm({ initial, onDone }: Props) {
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
   const [authorId, setAuthorId] = useState(initial?.author_id ?? '')
   const [tagsText, setTagsText] = useState((initial?.tags ?? []).join(', '))
+  const [selectedTags, setSelectedTags] = useState<string[]>(() => normalizeTagList(initial?.tags ?? []))
   const [status, setStatus] = useState<ArtworkStatus>(initial?.status ?? 'published')
   const [visibility, setVisibility] = useState<ArtworkVisibility>(initial?.visibility ?? 'public')
   const [commentsEnabled, setCommentsEnabled] = useState(initial?.comments_enabled ?? true)
@@ -221,12 +224,13 @@ export default function ArtworkForm({ initial, onDone }: Props) {
   }, [initial?.id])
 
   const tags = useMemo(() => {
+    if (isSupabaseV2) return selectedTags
     return tagsText
       .split(',')
       .map((tag) => tag.trim())
       .filter(Boolean)
       .filter((tag, index, arr) => arr.indexOf(tag) === index)
-  }, [tagsText])
+  }, [selectedTags, tagsText])
 
   const previewUrl = imagePreviewUrl ?? imageUrl
 
@@ -471,24 +475,32 @@ export default function ArtworkForm({ initial, onDone }: Props) {
             </label>
           )}
 
-          <Field label="Теги" hint="Через запятую: фотография, минимализм, 3D.">
-            <input
-              type="text"
-              value={tagsText}
-              onChange={(event) => setTagsText(event.target.value)}
-              className={fieldClass}
-              placeholder="Фотография, Портрет, Digital"
-            />
-          </Field>
+          {isSupabaseV2 ? (
+            <Field label="Теги">
+              <ArtworkTagSelector value={selectedTags} onChange={setSelectedTags} />
+            </Field>
+          ) : (
+            <>
+              <Field label="Теги" hint="Через запятую: фотография, минимализм, 3D.">
+                <input
+                  type="text"
+                  value={tagsText}
+                  onChange={(event) => setTagsText(event.target.value)}
+                  className={fieldClass}
+                  placeholder="Фотография, Портрет, Digital"
+                />
+              </Field>
 
-          {tags.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {tags.map((tag) => (
-                <span key={tag} className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-600">
-                  {tag}
-                </span>
-              ))}
-            </div>
+              {tags.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {tags.map((tag) => (
+                    <span key={tag} className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-600">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
           )}
 
           <Field label="Описание">
@@ -599,6 +611,8 @@ function canUseArtworkMedia(payload: Pick<ArtworkPayload, 'status' | 'visibility
 
 function validateV2Submission(payload: ArtworkPayload, imageFile: File | null, isEditing: boolean) {
   if (!payload.author_id) return 'Выберите автора работы.'
+  const tagError = validateArtworkTags(payload.tags)
+  if (tagError) return tagError
   if (imageFile && !canUseArtworkMedia(payload)) {
     return 'Новое изображение можно загрузить только для опубликованной открытой V2-работы.'
   }

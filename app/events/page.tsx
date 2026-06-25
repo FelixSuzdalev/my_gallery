@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowUpRight, Calendar, Edit3, Loader2, MapPin, Plus, Save, Search, SlidersHorizontal, Trash2, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
+import { useDevRolePreview } from '@/lib/dev-role-preview'
 
 type EventStatus = 'active' | 'upcoming' | 'past'
 type EventFilter = 'all' | 'active' | 'upcoming'
@@ -136,6 +137,8 @@ export default function EventsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
+  const { effectiveRole } = useDevRolePreview(isSupabaseV2 && isAdmin ? 'admin' : null)
+  const canShowAdminPanel = isSupabaseV2 ? effectiveRole === 'admin' : isAdmin
 
   const refreshPublicEvents = useCallback(async () => {
     const rawEvents = await loadPublicEvents()
@@ -232,7 +235,7 @@ export default function EventsPage() {
       </section>
 
       <div className="mx-auto max-w-7xl px-6 py-10">
-        {isAdmin && <AdminEventsPanel onChanged={() => void refreshPublicEvents()} />}
+        {canShowAdminPanel && <AdminEventsPanel onChanged={() => void refreshPublicEvents()} />}
 
         <section className="mb-8 rounded-[28px] border border-zinc-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

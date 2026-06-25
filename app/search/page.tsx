@@ -7,6 +7,7 @@ import { SortByEnum } from '@/app/core/models/types'
 import { supabase } from '@/lib/supabase'
 import { searchArtworks, type ArtworkRow } from '@/lib/search'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
+import { TAG_CATALOG_TAGS, normalizeTagList } from '@/lib/tag-catalog'
 
 type AuthorOption = {
   id: string
@@ -36,7 +37,7 @@ export default function SearchPage() {
     let tagQuery = supabase.from('artworks').select('tags').limit(500)
     if (isSupabaseV2) tagQuery = tagQuery.eq('status', 'published').eq('visibility', 'public').is('deleted_at', null)
     const { data: tagRows } = await tagQuery
-    setTags(Array.from(new Set((tagRows ?? []).flatMap((row: { tags?: string[] | null }) => row.tags ?? []).filter(Boolean))).sort())
+    setTags(normalizeTagList([...TAG_CATALOG_TAGS, ...(tagRows ?? []).flatMap((row: { tags?: string[] | null }) => row.tags ?? [])]).sort((a, b) => a.localeCompare(b, 'ru')))
 
     let authorsQuery = supabase
       .from('profiles')

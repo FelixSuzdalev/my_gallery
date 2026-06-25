@@ -7,6 +7,7 @@ import { Loader2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { getCurrentProfile, type CurrentProfile } from '@/lib/current-profile'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
+import { useDevRolePreview } from '@/lib/dev-role-preview'
 import ProfileEditor from '@/components/ProfileEditor'
 import CreatorApplicationPanel from '@/components/CreatorApplicationPanel'
 import { V2CollectionManager } from '@/components/V2Collections'
@@ -17,6 +18,7 @@ export default function MyProfilePage() {
   const [profile, setProfile] = useState<CurrentProfile | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const { effectiveRole } = useDevRolePreview(isSupabaseV2 ? profile?.role ?? null : null)
 
   useEffect(() => {
     if (!isSupabaseV2) return
@@ -93,7 +95,8 @@ export default function MyProfilePage() {
     )
   }
 
-  const canApplyForCreator = profile.role !== 'creator' && profile.role !== 'admin'
+  const displayRole = isSupabaseV2 ? effectiveRole ?? profile.role : profile.role
+  const canApplyForCreator = displayRole !== 'creator' && displayRole !== 'admin'
 
   return (
     <main className="min-h-screen bg-white px-6 py-10 text-black">
@@ -151,7 +154,7 @@ export default function MyProfilePage() {
 
         {isSupabaseV2 && (
           <div className="lg:col-span-2">
-            <V2CollectionManager currentUserId={profile.id} role={profile.role} />
+            <V2CollectionManager currentUserId={profile.id} role={displayRole} />
           </div>
         )}
       </div>

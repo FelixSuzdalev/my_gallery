@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Filter, Search, SlidersHorizontal, X } from 'lucide-react'
 import { SortByEnum } from '@/app/core/models/types'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
+import { TAG_CATALOG_TAGS } from '@/lib/tag-catalog'
 
 interface Props {
   activeTag: string
@@ -23,7 +24,7 @@ interface Props {
 }
 
 const ALL_TAG = 'Все'
-const FALLBACK_TAGS = ['Фотография', 'Digital', 'Минимализм', '3D', 'Архитектура', 'Портрет', 'Street Art']
+const FALLBACK_TAGS = TAG_CATALOG_TAGS
 
 export default function FeedFilters({
   activeTag,
@@ -42,7 +43,7 @@ export default function FeedFilters({
   const debounceRef = useRef<number | null>(null)
 
   const tags = useMemo(() => {
-    const source = availableTags && availableTags.length > 0 ? availableTags : FALLBACK_TAGS
+    const source = availableTags && availableTags.length > 0 ? [...FALLBACK_TAGS, ...availableTags] : FALLBACK_TAGS
     return [ALL_TAG, ...Array.from(new Set(source)).filter(Boolean)]
   }, [availableTags])
 
