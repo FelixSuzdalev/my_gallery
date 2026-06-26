@@ -1,439 +1,581 @@
-// app/feed/page.tsx
 'use client'
-import React, { useEffect, useState, useMemo, useCallback } from 'react'
-import { Heart, Loader2, X, ChevronLeft, ChevronRight } from 'lucide-react'
+
+import Link from 'next/link'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ChevronLeft, ChevronRight, Heart, Image as ImageIcon, Loader2, MessageCircle, ThumbsUp, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import FeedFilters from '@/components/FeedFilters'
 import NagModal from '@/components/NagModal'
+import ArtworkComments from '@/components/ArtworkComments'
 import { SortByEnum } from '@/app/core/models/types'
-import { searchArtworks } from '@/lib/search' // <-- добавил импорт
+import type { ArtworkStatsCounts, ArtworkStatsMap } from '@/lib/artwork-stats'
+import { searchArtworks, type ArtworkRow } from '@/lib/search'
+import { isSupabaseV2 } from '@/lib/supabase-schema-version'
+import {
+  createOwnAction,
+  deleteOwnAction,
+  emptyStats,
+  getCurrentUserId,
+  getStats,
+  loadOwnActionMap,
+  loadV2Engagement,
+  refreshV2ArtworkStats,
+} from '@/lib/v2-content'
 
 interface Artwork {
   id: string
   title: string
-  image_url: string
+  image_url?: string | null
+  description?: string | null
   tags?: string[]
   created_at?: string
   author_id?: string
+  comments_enabled?: boolean
   profiles?: {
-    username?: string
-    full_name?: string
-  }
+    username?: string | null
+    full_name?: string | null
+  } | null
   liked?: boolean
+  likedByCurrentUser?: boolean
+}
+
+type SearchResult = Awaited<ReturnType<typeof searchArtworks>>
+type FavoriteRow = {
+  id: string
+  artwork_id: string
+  user_id?: string
+}
+
+const ALL_TAG = 'Все'
+
+function getAuthorName(work: Artwork) {
+  return work.profiles?.full_name || work.profiles?.username || work.author_id || 'Автор'
+}
+
+function shuffleArtworks<T>(items: T[]) {
+  const shuffled = [...items]
+
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1))
+    const item = shuffled[index]
+    shuffled[index] = shuffled[randomIndex]
+    shuffled[randomIndex] = item
+  }
+
+  return shuffled
 }
 
 export default function FeedPage() {
   const [works, setWorks] = useState<Artwork[]>([])
   const [loading, setLoading] = useState(true)
-
-  // filter/sort state (controlled by FeedFilters)
-  const [activeTag, setActiveTag] = useState('Все')
+  const [availableTags, setAvailableTags] = useState<string[]>([])
+  const [activeTag, setActiveTag] = useState(ALL_TAG)
   const [searchQuery, setSearchQuery] = useState('')
-  const [sortByEnum, setSortByEnum] = useState<SortByEnum>(SortByEnum.Newest)
-
+  const [sortByEnum, setSortByEnum] = useState<SortByEnum>(isSupabaseV2 ? SortByEnum.Random : SortByEnum.Newest)
   const [showNag, setShowNag] = useState(false)
-  const [togglingIds, setTogglingIds] = useState<Record<string, boolean>>({})
-
-  // favMap: artworkId -> favoriteRowId (for quick delete)
+  const [togglingFavoriteIds, setTogglingFavoriteIds] = useState<Record<string, boolean>>({})
+  const [togglingLikeIds, setTogglingLikeIds] = useState<Record<string, boolean>>({})
   const [favMap, setFavMap] = useState<Record<string, string>>({})
-  // counts: artworkId -> number of favorites
+  const [likeMap, setLikeMap] = useState<Record<string, string>>({})
   const [counts, setCounts] = useState<Record<string, number>>({})
-
-  // lightbox
+  const [stats, setStats] = useState<ArtworkStatsMap>({})
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
 
-  // --- fetchArtworks: пробуем searchArtworks, а если пусто - делаем fallback fetch + client-side фильтр ---
-  async function fetchArtworks(filters?: { tag?: string; tags?: string[]; search?: string }) {
-    setLoading(true)
-    try {
-      console.debug('fetchArtworks called', { tag: filters?.tag, search: filters?.search, sortByEnum })
+  const applyStatsUpdate = useCallback((artworkId: string, nextStats: ArtworkStatsCounts) => {
+    setStats((state) => ({ ...state, [artworkId]: nextStats }))
+  }, [])
 
-      const explicitTag = filters?.tag && filters.tag !== 'Все' ? filters.tag : undefined
-      const explicitTags = filters?.tags && filters.tags.length ? filters.tags : undefined
+  const fetchArtworks = useCallback(async (filters?: { tag?: string; search?: string; sortBy?: SortByEnum }) => {
+    setLoading(true)
+
+    try {
+      const explicitTag = filters?.tag && filters.tag !== ALL_TAG ? filters.tag : undefined
       const search = filters?.search?.trim() ?? ''
+      const sortBy = filters?.sortBy ?? SortByEnum.Newest
       const hasSearch = search.length > 0
 
-      // 1) Попытка использовать searchArtworks (тот код, что ты уже написал)
-      let res: any = null
+      let res: SearchResult | null = null
+
       try {
         res = await searchArtworks({
           q: hasSearch ? search : undefined,
           tag: explicitTag,
-          tags: explicitTags,
-          sortBy: sortByEnum,
-          limit: 500
+          sortBy,
+          limit: 500,
         })
-        console.debug('searchArtworks returned', res?.artworks?.length ?? 0)
       } catch (err) {
-        console.warn('searchArtworks failed, will fallback to client filtering', err)
-        res = null
+        console.warn('searchArtworks failed, using fallback fetch', err)
       }
 
       let artworks: Artwork[] = []
 
-      // 2) Если searchArtworks вернул данные — используем их
       if (res && Array.isArray(res.artworks) && res.artworks.length > 0) {
-        artworks = (res.artworks || []).map((a: any) => ({
-          id: a.id,
-          title: a.title,
-          image_url: a.image_url,
-          tags: a.tags,
-          created_at: a.created_at,
-          author_id: a.author_id,
-          profiles: a.profiles,
-          liked: !!res.favMap?.[a.id]
-        } as Artwork))
-        // also ensure counts/favMap are available
-        setCounts(res.counts || {})
-        setFavMap(res.favMap || {})
+        artworks = res.artworks.map((artwork: ArtworkRow & { comments_enabled?: boolean; description?: string | null }) => ({
+          id: artwork.id,
+          title: artwork.title,
+          image_url: artwork.image_url,
+          description: artwork.description,
+          tags: artwork.tags,
+          created_at: artwork.created_at,
+          author_id: artwork.author_id,
+          comments_enabled: artwork.comments_enabled ?? true,
+          profiles: artwork.profiles,
+          liked: Boolean(res?.favMap?.[artwork.id]),
+        }))
       } else {
-        // 3) FALLBACK: если ничего не вернулось — fetch all recent and фильтруем клиент-сайдом
-        console.debug('fallback: fetching artworks and filtering client-side')
-        const { data: dataWorks, error: worksErr } = await supabase
-          .from('artworks')
-          .select(`
-            *,
+        const artworkSelect = isSupabaseV2
+          ? `
+            id,
+            title,
+            image_url,
+            description,
+            tags,
+            created_at,
+            author_id,
+            comments_enabled,
             profiles (
               username,
               full_name
             )
-          `)
-          .order('created_at', { ascending: false })
-          .limit(500)
+          `
+          : `
+            id,
+            title,
+            image_url,
+            description,
+            tags,
+            created_at,
+            author_id,
+            profiles (
+              username,
+              full_name
+            )
+          `
 
-        if (worksErr) {
-          console.error('Ошибка загрузки работ (fallback):', worksErr)
+        let fallbackQuery = supabase
+          .from('artworks')
+          .select(artworkSelect)
+
+        if (isSupabaseV2) {
+          fallbackQuery = fallbackQuery
+            .eq('status', 'published')
+            .eq('visibility', 'public')
+            .is('deleted_at', null)
+        }
+
+        const { data, error } = await fallbackQuery.order('created_at', { ascending: false }).limit(500)
+
+        if (error) {
+          console.error('Artworks fallback load error:', error)
         } else {
-          const all = (dataWorks || []) as any[]
-
-          // client-side filter function
+          const all = (data ?? []) as unknown as Artwork[]
           const searchLower = search.toLowerCase()
           const tokens = hasSearch ? searchLower.split(/\s+/).filter(Boolean) : []
 
-          const matchesSearch = (item: any) => {
-            if (!hasSearch) return true
-            const title = (item.title || '').toLowerCase()
-            if (title.includes(searchLower)) return true
-            const uname = (item.profiles?.username || '').toLowerCase()
-            if (uname.includes(searchLower)) return true
-            const fullname = (item.profiles?.full_name || '').toLowerCase()
-            if (fullname.includes(searchLower)) return true
-            // tags exact token includes or tag contains token
-            const tagsArr: string[] = item.tags || []
-            for (const t of tagsArr) {
-              const tLower = (t || '').toLowerCase()
-              if (tLower.includes(searchLower)) return true
-              for (const tk of tokens) {
-                if (tLower.includes(tk)) return true
-              }
-            }
-            return false
-          }
+          artworks = all.filter((item) => {
+            const tags = item.tags ?? []
+            const matchesSearch =
+              !hasSearch ||
+              item.title?.toLowerCase().includes(searchLower) ||
+              item.profiles?.username?.toLowerCase().includes(searchLower) ||
+              item.profiles?.full_name?.toLowerCase().includes(searchLower) ||
+              tags.some((tag) => {
+                const tagLower = tag.toLowerCase()
+                return tagLower.includes(searchLower) || tokens.some((token) => tagLower.includes(token))
+              })
 
-          const matchesTagFilter = (item: any) => {
-            if (explicitTag) {
-              const tagsArr: string[] = item.tags || []
-              return tagsArr.includes(explicitTag)
-            } else if (explicitTags) {
-              const tagsArr: string[] = item.tags || []
-              return explicitTags.some(t => tagsArr.includes(t))
-            }
-            return true
-          }
-
-          const filtered = all.filter(i => matchesSearch(i) && matchesTagFilter(i))
-          artworks = filtered.map((r: any) => ({
-            id: r.id,
-            title: r.title,
-            image_url: r.image_url,
-            tags: r.tags,
-            created_at: r.created_at,
-            author_id: r.author_id,
-            profiles: r.profiles,
-            liked: false
-          } as Artwork))
-
-          // We'll compute counts/favMap below from these artwork ids
+            const matchesTag = !explicitTag || tags.includes(explicitTag)
+            return matchesSearch && matchesTag
+          })
         }
       }
 
-      // 4) Теперь — если ещё не получили counts/favMap (например в fallback) — загрузим их
-      const artworkIds = artworks.map(w => w.id)
-      let countsMap: Record<string, number> = {}
+      const artworkIds = artworks.map((work) => work.id)
+      const countsMap: Record<string, number> = {}
       let favMapObj: Record<string, string> = {}
+      let likeMapObj: Record<string, string> = {}
+      let statsMap: ArtworkStatsMap = {}
 
       if (artworkIds.length > 0) {
-        // get all favorites for these artworks to compute counts
-        try {
+        if (isSupabaseV2) {
+          const engagement = await loadV2Engagement(artworkIds)
+          statsMap = engagement.stats
+          favMapObj = engagement.favorites
+          likeMapObj = engagement.likes
+        } else {
           const { data: favRowsForCount, error: favCountErr } = await supabase
             .from('favorites')
             .select('id, artwork_id, user_id')
             .in('artwork_id', artworkIds)
 
           if (favCountErr) {
-            console.warn('Не удалось загрузить counts для favorites:', favCountErr)
+            console.warn('Favorite counts load error:', favCountErr)
           } else {
-            countsMap = (favRowsForCount || []).reduce((acc: Record<string, number>, r: any) => {
-              acc[r.artwork_id] = (acc[r.artwork_id] || 0) + 1
-              return acc
-            }, {} as Record<string, number>)
+            ;((favRowsForCount ?? []) as FavoriteRow[]).forEach((row) => {
+              countsMap[row.artwork_id] = (countsMap[row.artwork_id] ?? 0) + 1
+            })
           }
-        } catch (err) {
-          console.warn('favorites fetch failed', err)
-        }
 
-        // try to get session user favorites (to mark liked & build favMap)
-        try {
-          const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
-          if (sessionErr) console.warn('getSession warning:', sessionErr)
-          const userId = sessionData?.session?.user?.id ?? null
-
-          if (userId) {
-            const { data: userFavRows, error: userFavErr } = await supabase
-              .from('favorites')
-              .select('artwork_id, id')
-              .eq('user_id', userId)
-              .in('artwork_id', artworkIds)
-
-            if (userFavErr) {
-              console.warn('Не удалось получить favorites текущего пользователя:', userFavErr)
-            } else {
-              ;(userFavRows || []).forEach((r: any) => {
-                favMapObj[r.artwork_id] = r.id
-              })
-            }
-          }
-        } catch (err) {
-          console.warn('getSession or user favorites failed', err)
+          const userId = await getCurrentUserId()
+          favMapObj = await loadOwnActionMap('favorites', userId, artworkIds)
         }
       }
 
-      // 5) Apply counts & liked flags
-      setCounts(countsMap)
+      if (!isSupabaseV2) {
+        Object.keys(favMapObj).forEach((artworkId) => {
+          countsMap[artworkId] = Math.max(countsMap[artworkId] ?? 0, 1)
+        })
+      }
+
+      setStats(statsMap)
+      setLikeMap(likeMapObj)
+      setCounts((previousCounts) => {
+        const nextCounts = { ...countsMap }
+        if (isSupabaseV2) return nextCounts
+
+        artworkIds.forEach((artworkId) => {
+          if ((nextCounts[artworkId] ?? 0) === 0 && (previousCounts[artworkId] ?? 0) > 0) {
+            nextCounts[artworkId] = previousCounts[artworkId]
+          }
+        })
+        return nextCounts
+      })
       setFavMap(favMapObj)
-      setWorks(artworks.map(w => ({ ...w, liked: !!favMapObj[w.id] })))
-      console.debug('final works length', artworks.length, 'counts keys', Object.keys(countsMap).length)
+      const orderedArtworks = isSupabaseV2 && sortBy === SortByEnum.Random ? shuffleArtworks(artworks) : artworks
+
+      setWorks(
+        orderedArtworks.map((work) => ({
+          ...work,
+          liked: Boolean(favMapObj[work.id]),
+          likedByCurrentUser: Boolean(likeMapObj[work.id]),
+        }))
+      )
     } catch (err) {
       console.error('fetchArtworks unexpected error', err)
       setWorks([])
       setCounts({})
+      setStats({})
       setFavMap({})
+      setLikeMap({})
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  // Minimal onFiltersChange — sync parent state with filters from FeedFilters
-  const onFiltersChange = useCallback((filters: { tag: string; tags?: string[]; search: string; sortBy: SortByEnum }) => {
-    // keep parent state in sync — FeedFilters already calls setSearchQuery with debounce,
-    // but mirroring here ensures parent knows current filters immediately
-    if (typeof filters.search === 'string') setSearchQuery(filters.search)
-    if (filters.sortBy) setSortByEnum(filters.sortBy)
+  const onFiltersChange = useCallback((filters: { tag: string; search: string; sortBy: SortByEnum }) => {
+    setSearchQuery(filters.search)
+    setSortByEnum(filters.sortBy)
+    setActiveTag(filters.tag || ALL_TAG)
+  }, [])
 
-    if (filters.tag && filters.tag !== 'Все' && filters.tag !== 'Множественный') {
-      setActiveTag(filters.tag)
-    } else if (filters.tag === 'Все') {
-      setActiveTag('Все')
+  useEffect(() => {
+    const tagToSend = activeTag && activeTag !== ALL_TAG ? activeTag : undefined
+    void fetchArtworks({ tag: tagToSend, search: searchQuery, sortBy: sortByEnum })
+  }, [activeTag, fetchArtworks, searchQuery, sortByEnum])
+
+  useEffect(() => {
+    let mounted = true
+
+    async function loadTags() {
+      let tagsQuery = supabase.from('artworks').select('tags')
+      if (isSupabaseV2) {
+        tagsQuery = tagsQuery
+          .eq('status', 'published')
+          .eq('visibility', 'public')
+          .is('deleted_at', null)
+      }
+
+      const { data, error } = await tagsQuery.limit(500)
+      if (!mounted || error || !data) return
+
+      const tags = Array.from(
+        new Set(
+          (data as Array<{ tags?: string[] | null }>)
+            .flatMap((row) => row.tags ?? [])
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b))
+
+      setAvailableTags(tags)
     }
-    // Note: we intentionally do NOT call fetchArtworks directly here to avoid double requests
-    // because there's already an effect that triggers fetch when activeTag/searchQuery change.
+
+    const timer = window.setTimeout(() => {
+      void loadTags()
+    }, 0)
+
+    return () => {
+      mounted = false
+      window.clearTimeout(timer)
+    }
   }, [])
 
-  // initial load
-  useEffect(() => {
-    fetchArtworks()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const getFavoriteCount = useCallback(
+    (artworkId: string) => (isSupabaseV2 ? getStats(stats, artworkId).favorites_count : counts[artworkId] ?? 0),
+    [counts, stats]
+  )
 
-  // Re-fetch whenever tag, search or sort changes (FeedFilters controls these states)
-  useEffect(() => {
-    const tagToSend = activeTag && activeTag !== 'Все' ? activeTag : undefined
-    fetchArtworks({ tag: tagToSend, search: searchQuery || undefined })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTag, searchQuery, sortByEnum])
+  const getLikeCount = useCallback((artworkId: string) => getStats(stats, artworkId).likes_count, [stats])
+  const getCommentCount = useCallback((artworkId: string) => getStats(stats, artworkId).comments_count, [stats])
 
-  // processedWorks: apply client-side filtering is redundant because we fetch filtered set,
-  // but we still apply final sorting here based on sortByEnum + counts
   const processedWorks = useMemo(() => {
-    // create a shallow copy to avoid mutating state
-    const arr = [...works]
+    if (isSupabaseV2) return works
+
+    const sortedWorks = [...works]
 
     if (sortByEnum === SortByEnum.Newest) {
-      arr.sort((a, b) => (new Date(b.created_at ?? 0).getTime()) - (new Date(a.created_at ?? 0).getTime()))
+      sortedWorks.sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime())
     } else if (sortByEnum === SortByEnum.Popular) {
-      arr.sort((a, b) => {
-        const cb = counts[b.id] ?? 0
-        const ca = counts[a.id] ?? 0
-        if (cb !== ca) return cb - ca
-        // tiebreaker: newest first
-        return (new Date(b.created_at ?? 0).getTime()) - (new Date(a.created_at ?? 0).getTime())
+      sortedWorks.sort((a, b) => {
+        const countA = isSupabaseV2 ? getStats(stats, a.id).likes_count : counts[a.id] ?? 0
+        const countB = isSupabaseV2 ? getStats(stats, b.id).likes_count : counts[b.id] ?? 0
+        const diff = countB - countA
+        if (diff !== 0) return diff
+        return new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()
       })
     } else if (sortByEnum === SortByEnum.Trending) {
-      const MS_PER_DAY = 1000 * 60 * 60 * 24
       const now = Date.now()
-      arr.sort((a, b) => {
-        const ca = counts[a.id] ?? 0
-        const cb = counts[b.id] ?? 0
+      const msPerDay = 1000 * 60 * 60 * 24
 
-        const ta = a.created_at ? new Date(a.created_at).getTime() : now
-        const tb = b.created_at ? new Date(b.created_at).getTime() : now
-
-        const ageDaysA = Math.max(1, (now - ta) / MS_PER_DAY)
-        const ageDaysB = Math.max(1, (now - tb) / MS_PER_DAY)
-
-        const scoreA = ca / ageDaysA
-        const scoreB = cb / ageDaysB
-
+      sortedWorks.sort((a, b) => {
+        const ageA = Math.max(1, (now - new Date(a.created_at ?? now).getTime()) / msPerDay)
+        const ageB = Math.max(1, (now - new Date(b.created_at ?? now).getTime()) / msPerDay)
+        const baseA = isSupabaseV2 ? getStats(stats, a.id).likes_count : counts[a.id] ?? 0
+        const baseB = isSupabaseV2 ? getStats(stats, b.id).likes_count : counts[b.id] ?? 0
+        const scoreA = baseA / ageA
+        const scoreB = baseB / ageB
         if (scoreB !== scoreA) return scoreB - scoreA
-        if (cb !== ca) return cb - ca
-        return tb - ta
+        return new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime()
       })
     }
 
-    return arr
-  }, [works, sortByEnum, counts])
+    return sortedWorks
+  }, [counts, sortByEnum, stats, works])
 
-  // lightbox handlers (unchanged)
+  const tagCounts = useMemo(() => {
+    return works.reduce((acc: Record<string, number>, work) => {
+      ;(work.tags ?? []).forEach((tag) => {
+        acc[tag] = (acc[tag] ?? 0) + 1
+      })
+      return acc
+    }, {})
+  }, [works])
+
   const openLightbox = useCallback((artworkId: string) => {
-    const idx = processedWorks.findIndex(w => w.id === artworkId)
-    if (idx >= 0) setLightboxIndex(idx)
+    const index = processedWorks.findIndex((work) => work.id === artworkId)
+    if (index >= 0) setLightboxIndex(index)
   }, [processedWorks])
 
   const closeLightbox = useCallback(() => setLightboxIndex(null), [])
 
   const showPrev = useCallback(() => {
-    setLightboxIndex(i => {
-      if (i === null) return null
-      const prev = (i - 1 + processedWorks.length) % processedWorks.length
-      return prev
+    setLightboxIndex((index) => {
+      if (index === null) return null
+      return (index - 1 + processedWorks.length) % processedWorks.length
     })
   }, [processedWorks.length])
 
   const showNext = useCallback(() => {
-    setLightboxIndex(i => {
-      if (i === null) return null
-      const next = (i + 1) % processedWorks.length
-      return next
+    setLightboxIndex((index) => {
+      if (index === null) return null
+      return (index + 1) % processedWorks.length
     })
   }, [processedWorks.length])
 
   useEffect(() => {
     if (lightboxIndex === null) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeLightbox()
-      if (e.key === 'ArrowLeft') showPrev()
-      if (e.key === 'ArrowRight') showNext()
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeLightbox()
+      if (event.key === 'ArrowLeft') showPrev()
+      if (event.key === 'ArrowRight') showNext()
     }
+
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [lightboxIndex, closeLightbox, showPrev, showNext])
+  }, [closeLightbox, lightboxIndex, showNext, showPrev])
 
-  // Toggle favorite (unchanged logic from your version)
+  async function refreshCount(artworkId: string) {
+    if (isSupabaseV2) {
+      const nextStats = await refreshV2ArtworkStats(artworkId)
+      applyStatsUpdate(artworkId, nextStats)
+      return
+    }
+
+    const { count, error } = await supabase
+      .from('favorites')
+      .select('*', { count: 'exact', head: true })
+      .eq('artwork_id', artworkId)
+
+    if (!error) {
+      setCounts((state) => ({
+        ...state,
+        [artworkId]: count ?? 0,
+      }))
+    }
+  }
+
   const toggleFavorite = async (artworkId: string) => {
-    try {
-      setTogglingIds(s => ({ ...s, [artworkId]: true }))
+    if (togglingFavoriteIds[artworkId]) return
 
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession()
-      if (sessionErr) {
-        console.error('getSession error', sessionErr)
-        alert('Ошибка авторизации. Попробуйте перезайти.')
-        setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
-        return
-      }
-      const user = sessionData?.session?.user ?? null
-      if (!user) {
+    try {
+      setTogglingFavoriteIds((state) => ({ ...state, [artworkId]: true }))
+
+      const userId = await getCurrentUserId()
+      if (!userId) {
         setShowNag(true)
-        setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
         return
       }
 
       const existingFavId = favMap[artworkId]
+      const previousCount = counts[artworkId] ?? 0
+      const previousStats = getStats(stats, artworkId)
 
       if (existingFavId) {
-        // DELETE
-        const { error: delErr } = await supabase.from('favorites').delete().eq('id', existingFavId)
-        if (delErr) {
-          console.error('Error deleting favorite:', delErr)
-          alert('Не удалось удалить из избранного: ' + delErr.message)
-          setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
+        setFavMap((state) => {
+          const next = { ...state }
+          delete next[artworkId]
+          return next
+        })
+        setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, liked: false } : work)))
+        if (isSupabaseV2) {
+          applyStatsUpdate(artworkId, {
+            ...previousStats,
+            favorites_count: Math.max(0, previousStats.favorites_count - 1),
+          })
+        } else {
+          setCounts((state) => ({ ...state, [artworkId]: Math.max(0, previousCount - 1) }))
+        }
+
+        const { error } = await supabase.from('favorites').delete().eq('id', existingFavId)
+        if (error) {
+          setFavMap((state) => ({ ...state, [artworkId]: existingFavId }))
+          setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, liked: true } : work)))
+          if (isSupabaseV2) applyStatsUpdate(artworkId, previousStats)
+          else setCounts((state) => ({ ...state, [artworkId]: previousCount }))
+          alert(`Не удалось удалить из избранного: ${error.message}`)
           return
         }
 
-        await refreshCounts(artworkId)
-
-        setFavMap(m => { const n = { ...m }; delete n[artworkId]; return n })
-        setWorks(ws => ws.map(w => w.id === artworkId ? { ...w, liked: false } : w))
-        setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
+        void refreshCount(artworkId)
         return
       }
 
-      // INSERT
-      const { data: insertData, error: insertErr } = await supabase
+      setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, liked: true } : work)))
+      if (isSupabaseV2) {
+        applyStatsUpdate(artworkId, { ...previousStats, favorites_count: previousStats.favorites_count + 1 })
+      } else {
+        setCounts((state) => ({ ...state, [artworkId]: previousCount + 1 }))
+      }
+
+      const { data, error } = await supabase
         .from('favorites')
-        .insert({ user_id: user.id, artwork_id: artworkId })
-        .select()
+        .insert({ user_id: userId, artwork_id: artworkId })
+        .select('id, artwork_id')
         .single()
 
-      if (insertErr) {
-        console.error('Error inserting favorite:', insertErr)
-        const msg = String(insertErr.message || '')
-        if (insertErr.code === '23505' || msg.toLowerCase().includes('duplicate')) {
-          // race — refetch
-          const { data: refetchFav, error: refetchErr } = await supabase
+      if (error) {
+        const message = String(error.message || '')
+        const isDuplicate = error.code === '23505' || message.toLowerCase().includes('duplicate')
+
+        if (isDuplicate) {
+          const { data: refetchedFavorite } = await supabase
             .from('favorites')
             .select('id, artwork_id')
-            .eq('user_id', user.id)
+            .eq('user_id', userId)
             .eq('artwork_id', artworkId)
             .maybeSingle()
 
-          if (!refetchErr && refetchFav?.id) {
-            setFavMap(f => ({ ...f, [artworkId]: refetchFav.id }))
+          if (refetchedFavorite?.id) {
+            setFavMap((state) => ({ ...state, [artworkId]: refetchedFavorite.id }))
+            void refreshCount(artworkId)
+            return
           }
-          await refreshCounts(artworkId)
-          setWorks(ws => ws.map(w => w.id === artworkId ? { ...w, liked: true } : w))
-        } else {
-          alert('Не удалось добавить в избранное: ' + msg)
         }
-        setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
+
+        setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, liked: false } : work)))
+        if (isSupabaseV2) applyStatsUpdate(artworkId, previousStats)
+        else setCounts((state) => ({ ...state, [artworkId]: previousCount }))
+        alert(`Не удалось добавить в избранное: ${message}`)
         return
       }
 
-      setFavMap(f => ({ ...f, [artworkId]: insertData.id }))
-      await refreshCounts(artworkId)
-      setWorks(ws => ws.map(w => w.id === artworkId ? { ...w, liked: true } : w))
-
+      setFavMap((state) => ({ ...state, [artworkId]: data.id }))
+      void refreshCount(artworkId)
     } catch (err) {
-      console.error('toggleFavorite unexpected error', err)
-      alert('Ошибка при переключении избранного: ' + String(err))
+      console.error('Favorite toggle error:', err)
+      alert('Ошибка при переключении избранного.')
     } finally {
-      setTogglingIds(s => { const n = { ...s }; delete n[artworkId]; return n })
+      setTogglingFavoriteIds((state) => {
+        const next = { ...state }
+        delete next[artworkId]
+        return next
+      })
     }
   }
 
-  // helper: refresh a single artwork's favorite count
-  async function refreshCounts(artworkId: string) {
-    try {
-      const { count, error } = await supabase
-        .from('favorites')
-        .select('*', { count: 'exact', head: true })
-        .eq('artwork_id', artworkId)
+  const toggleLike = async (artworkId: string) => {
+    if (!isSupabaseV2 || togglingLikeIds[artworkId]) return
 
-      if (error) {
-        console.warn('refreshCounts error:', error)
+    try {
+      setTogglingLikeIds((state) => ({ ...state, [artworkId]: true }))
+
+      const userId = await getCurrentUserId()
+      if (!userId) {
+        setShowNag(true)
         return
       }
 
-      setCounts(c => ({
-        ...c,
-        [artworkId]: count ?? 0
-      }))
-    } catch (err) {
-      console.error('refreshCounts unexpected', err)
+      const existingLikeId = likeMap[artworkId]
+      const previousStats = getStats(stats, artworkId)
+
+      if (existingLikeId) {
+        setLikeMap((state) => {
+          const next = { ...state }
+          delete next[artworkId]
+          return next
+        })
+        setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, likedByCurrentUser: false } : work)))
+        applyStatsUpdate(artworkId, { ...previousStats, likes_count: Math.max(0, previousStats.likes_count - 1) })
+
+        try {
+          await deleteOwnAction('artwork_likes', existingLikeId)
+          void refreshCount(artworkId)
+        } catch (error) {
+          setLikeMap((state) => ({ ...state, [artworkId]: existingLikeId }))
+          setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, likedByCurrentUser: true } : work)))
+          applyStatsUpdate(artworkId, previousStats)
+          alert(`Не удалось убрать лайк: ${error instanceof Error ? error.message : 'ошибка'}`)
+        }
+        return
+      }
+
+      setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, likedByCurrentUser: true } : work)))
+      applyStatsUpdate(artworkId, { ...previousStats, likes_count: previousStats.likes_count + 1 })
+
+      try {
+        const row = await createOwnAction('artwork_likes', userId, artworkId)
+        setLikeMap((state) => ({ ...state, [artworkId]: row.id }))
+        void refreshCount(artworkId)
+      } catch (error) {
+        setWorks((state) => state.map((work) => (work.id === artworkId ? { ...work, likedByCurrentUser: false } : work)))
+        applyStatsUpdate(artworkId, previousStats)
+        alert(`Не удалось поставить лайк: ${error instanceof Error ? error.message : 'ошибка'}`)
+      }
+    } finally {
+      setTogglingLikeIds((state) => {
+        const next = { ...state }
+        delete next[artworkId]
+        return next
+      })
     }
   }
+
+  const activeWork = lightboxIndex !== null ? processedWorks[lightboxIndex] : null
+  const activeStats = activeWork ? getStats(stats, activeWork.id) : emptyStats
 
   return (
-    <div className="min-h-screen bg-white">
+    <main className="min-h-screen bg-white">
       <FeedFilters
         activeTag={activeTag}
         setActiveTag={setActiveTag}
@@ -441,98 +583,214 @@ export default function FeedPage() {
         sortBy={sortByEnum}
         setSortBy={setSortByEnum}
         totalResults={processedWorks.length}
+        availableTags={availableTags}
+        tagCounts={tagCounts}
         onFiltersChange={onFiltersChange}
       />
 
-      <div className="max-w-[1800px] mx-auto px-6 py-8">
+      <div className="mx-auto max-w-[1800px] px-6 py-8">
         {loading ? (
-          <div className="flex justify-center py-20"><Loader2 className="animate-spin" /></div>
+          <div className="flex justify-center py-20 text-zinc-500">
+            <Loader2 className="animate-spin" />
+          </div>
+        ) : processedWorks.length === 0 ? (
+          <div className="rounded-[28px] border border-dashed border-zinc-300 py-20 text-center text-zinc-500">
+            Работы не найдены.
+          </div>
         ) : (
-          <div className="columns-1 sm:columns-2 md:columns-3 lg:columns-4 gap-8 space-y-8">
+          <div className="columns-1 gap-8 space-y-8 sm:columns-2 md:columns-3 lg:columns-4">
             {processedWorks.map((work) => (
-              <div
+              <article
                 key={work.id}
-                className="break-inside-avoid group cursor-pointer relative rounded-2xl overflow-hidden shadow-sm"
+                className="gallery-card-motion archive-card-reveal group relative break-inside-avoid cursor-pointer overflow-hidden rounded-[24px] bg-zinc-100 shadow-sm"
                 onClick={() => openLightbox(work.id)}
               >
-                <img src={work.image_url} alt={work.title} className="w-full h-auto transition-transform duration-700 group-hover:scale-105" />
-
-                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity p-6 flex flex-col justify-end">
-                  <h3 className="text-white font-bold">{work.title}</h3>
-                  <p className="text-white/70 text-sm">@{work.profiles?.username}</p>
-
-                  <div className="mt-4 flex items-center gap-3">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); toggleFavorite(work.id) }}
-                      className={`w-fit p-2 rounded-full transition-colors ${work.liked ? 'bg-red-500 text-white' : 'bg-white text-black hover:bg-red-500 hover:text-white'}`}
-                      title={work.liked ? 'Убрать из избранного' : 'Добавить в избранное'}
-                      aria-pressed={work.liked ? 'true' : 'false'}
-                      disabled={!!togglingIds[work.id]}
-                    >
-                      <Heart size={18} />
-                    </button>
-
-                    <div className="text-white/90 text-sm select-none">
-                      {counts[work.id] ?? 0}
-                    </div>
+                {work.image_url ? (
+                  <img
+                    src={work.image_url}
+                    alt={work.title}
+                    className="h-auto w-full transition-transform duration-700 group-hover:scale-105"
+                  />
+                ) : (
+                  <div className="flex aspect-[4/5] w-full items-center justify-center text-zinc-400">
+                    <ImageIcon />
                   </div>
+                )}
+
+                {isSupabaseV2 && (
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void toggleLike(work.id)
+                    }}
+                    className={`absolute left-3 top-3 z-10 inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-bold shadow-xl backdrop-blur-md transition ${
+                      work.likedByCurrentUser
+                        ? 'bg-black text-white'
+                        : 'bg-white/90 text-black hover:bg-black hover:text-white'
+                    }`}
+                    title={work.likedByCurrentUser ? 'Убрать лайк' : 'Поставить лайк'}
+                    aria-pressed={work.likedByCurrentUser ? 'true' : 'false'}
+                    disabled={!!togglingLikeIds[work.id]}
+                  >
+                    <ThumbsUp size={16} className={work.likedByCurrentUser ? 'fill-current' : ''} />
+                    <span>{getLikeCount(work.id)}</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void toggleFavorite(work.id)
+                  }}
+                  className={`absolute right-3 top-3 z-10 inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-bold shadow-xl backdrop-blur-md transition ${
+                    work.liked
+                      ? 'like-pop bg-red-500 text-white'
+                      : 'bg-white/90 text-black hover:bg-red-500 hover:text-white'
+                  }`}
+                  title={work.liked ? 'Убрать из избранного' : 'Добавить в избранное'}
+                  aria-pressed={work.liked ? 'true' : 'false'}
+                  disabled={!!togglingFavoriteIds[work.id]}
+                >
+                  <Heart size={16} className={work.liked ? 'fill-current' : ''} />
+                  <span>{getFavoriteCount(work.id)}</span>
+                </button>
+
+                <div className="absolute inset-0 flex flex-col justify-end bg-black/45 p-6 opacity-0 transition-opacity group-hover:opacity-100">
+                  <h3 className="text-lg font-black text-white">{work.title}</h3>
+                  {work.author_id ? (
+                    <Link
+                      href={`/profile/${work.author_id}`}
+                      onClick={(event) => event.stopPropagation()}
+                      className="secondary-copy mt-1 w-fit text-sm text-white/75 transition hover:text-white"
+                    >
+                      {getAuthorName(work)}
+                    </Link>
+                  ) : (
+                    <p className="secondary-copy mt-1 text-sm text-white/75">{getAuthorName(work)}</p>
+                  )}
+                  {isSupabaseV2 && (
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold text-white/80">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1">
+                        <ThumbsUp size={13} /> {getLikeCount(work.id)}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1">
+                        <Heart size={13} /> {getFavoriteCount(work.id)}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1">
+                        <MessageCircle size={13} /> {getCommentCount(work.id)}
+                      </span>
+                    </div>
+                  )}
                 </div>
-              </div>
+              </article>
             ))}
           </div>
         )}
       </div>
 
-      {showNag && <NagModal onClose={() => setShowNag(false)} />}
+      {showNag && <NagModal forceOpen reason="like" onClose={() => setShowNag(false)} />}
 
-      {/* Lightbox */}
-      {lightboxIndex !== null && (
-        <div
-          className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4"
-          onClick={() => closeLightbox()}
-        >
+      {activeWork && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={closeLightbox}>
           <div
-            className="relative max-w-[90vw] max-h-[90vh] w-full flex items-center justify-center"
-            onClick={(e) => e.stopPropagation()}
+            className="relative grid max-h-[92vh] w-full max-w-6xl gap-4 overflow-auto lg:grid-cols-[minmax(0,1fr)_360px]"
+            onClick={(event) => event.stopPropagation()}
           >
             <button
-              onClick={() => closeLightbox()}
-              className="absolute right-3 top-3 p-2 rounded bg-black/40 text-white"
-              aria-label="Close"
+              onClick={closeLightbox}
+              className="absolute right-3 top-3 z-20 rounded-full bg-black/50 p-2 text-white backdrop-blur"
+              aria-label="Закрыть"
             >
               <X />
             </button>
 
             <button
-              onClick={() => showPrev()}
-              className="absolute left-3 top-1/2 -translate-y-1/2 p-2 rounded bg-black/40 text-white"
-              aria-label="Previous"
+              onClick={showPrev}
+              className="absolute left-3 top-1/2 z-20 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white backdrop-blur"
+              aria-label="Предыдущая работа"
             >
               <ChevronLeft />
             </button>
 
-            <div className="max-w-full max-h-full">
-              <img
-                src={processedWorks[lightboxIndex].image_url}
-                alt={processedWorks[lightboxIndex].title}
-                className="max-w-[90vw] max-h-[80vh] object-contain"
-              />
-              <div className="mt-3 text-center text-white">
-                <div className="font-semibold">{processedWorks[lightboxIndex].title}</div>
-                <div className="text-sm text-white/80">@{processedWorks[lightboxIndex].profiles?.username}</div>
-              </div>
+            <div className="flex min-h-[60vh] items-center justify-center">
+              {activeWork.image_url ? (
+                <img
+                  src={activeWork.image_url}
+                  alt={activeWork.title}
+                  className="max-h-[86vh] max-w-full rounded-2xl object-contain"
+                />
+              ) : (
+                <div className="flex h-[60vh] w-full items-center justify-center rounded-2xl bg-zinc-900 text-zinc-500">
+                  <ImageIcon className="h-10 w-10" />
+                </div>
+              )}
             </div>
 
+            <aside className="rounded-3xl bg-white p-5 text-black">
+              <div className="pr-8">
+                <div className="font-semibold">{activeWork.title}</div>
+                {activeWork.author_id ? (
+                  <Link href={`/profile/${activeWork.author_id}`} className="secondary-copy text-sm text-zinc-500 transition hover:text-black">
+                    {getAuthorName(activeWork)}
+                  </Link>
+                ) : (
+                  <div className="secondary-copy text-sm text-zinc-500">{getAuthorName(activeWork)}</div>
+                )}
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {isSupabaseV2 && (
+                  <button
+                    onClick={() => void toggleLike(activeWork.id)}
+                    className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold transition ${
+                      activeWork.likedByCurrentUser ? 'bg-black text-white' : 'bg-zinc-100 text-black hover:bg-black hover:text-white'
+                    }`}
+                    disabled={!!togglingLikeIds[activeWork.id]}
+                    aria-pressed={activeWork.likedByCurrentUser ? 'true' : 'false'}
+                  >
+                    <ThumbsUp size={16} className={activeWork.likedByCurrentUser ? 'fill-current' : ''} />
+                    {activeStats.likes_count}
+                  </button>
+                )}
+                <button
+                  onClick={() => void toggleFavorite(activeWork.id)}
+                  className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold transition ${
+                    activeWork.liked ? 'like-pop bg-red-500 text-white' : 'bg-zinc-100 text-black hover:bg-red-500 hover:text-white'
+                  }`}
+                  disabled={!!togglingFavoriteIds[activeWork.id]}
+                  aria-pressed={activeWork.liked ? 'true' : 'false'}
+                >
+                  <Heart size={16} className={activeWork.liked ? 'fill-current' : ''} />
+                  {getFavoriteCount(activeWork.id)}
+                </button>
+                {isSupabaseV2 && (
+                  <span className="inline-flex items-center gap-2 rounded-full bg-zinc-100 px-4 py-2 text-sm font-bold text-zinc-600">
+                    <MessageCircle size={16} />
+                    {activeStats.comments_count}
+                  </span>
+                )}
+              </div>
+
+              {isSupabaseV2 && (
+                <ArtworkComments
+                  artworkId={activeWork.id}
+                  commentsEnabled={activeWork.comments_enabled ?? true}
+                  onStatsChange={(nextStats) => applyStatsUpdate(activeWork.id, nextStats)}
+                  className="mt-6"
+                />
+              )}
+            </aside>
+
             <button
-              onClick={() => showNext()}
-              className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded bg-black/40 text-white"
-              aria-label="Next"
+              onClick={showNext}
+              className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white backdrop-blur lg:right-[384px]"
+              aria-label="Следующая работа"
             >
               <ChevronRight />
             </button>
           </div>
         </div>
       )}
-    </div>
+    </main>
   )
 }

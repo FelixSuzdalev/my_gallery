@@ -1,20 +1,28 @@
-// components/cards/FavoriteCard.tsx
-'use client';
-import React from 'react';
-import Image from 'next/image';
-import { Trash2, Heart } from 'lucide-react';
-import { Artwork2 } from '@/app/core/models/types';
+'use client'
+
+import { Heart, Trash2 } from 'lucide-react'
+import { Artwork2 } from '@/app/core/models/types'
+
+export type FavoriteArtwork = Artwork2 & {
+  created_at?: string | null
+  tags?: string[] | null
+  profiles?: {
+    username?: string | null
+    full_name?: string | null
+  } | null
+}
 
 type Props = {
-  artwork: Artwork2;
-  favId?: string;
-  userLabel?: string | null;
-  showUser?: boolean;
-  onRemove?: (favId: string) => void;
-  onToggle?: () => void;       // <- toggle like/unlike
-  isDeleting?: boolean;
-  isToggling?: boolean;
-};
+  artwork: FavoriteArtwork
+  favId?: string
+  userLabel?: string | null
+  showUser?: boolean
+  onRemove?: (favId: string) => void
+  onToggle?: () => void
+  onOpen?: () => void
+  isDeleting?: boolean
+  isToggling?: boolean
+}
 
 export default function FavoriteCard({
   artwork,
@@ -23,55 +31,92 @@ export default function FavoriteCard({
   showUser = false,
   onRemove,
   onToggle,
+  onOpen,
   isDeleting,
-  isToggling
+  isToggling,
 }: Props) {
+  const authorLabel =
+    artwork.profiles?.full_name ||
+    artwork.profiles?.username ||
+    artwork.author_id ||
+    'Автор'
+
   return (
-    <article className="bg-white rounded-lg shadow-sm overflow-hidden flex flex-col">
-      <div className="relative w-full h-48 bg-gray-100">
-        {/* next/image требует настроенный next.config.js для внешних доменов */}
-        <Image
+    <article
+      className={`gallery-card-motion archive-card-reveal group overflow-hidden rounded-[28px] border border-zinc-200 bg-white text-black shadow-sm transition hover:border-black hover:shadow-xl ${onOpen ? 'cursor-pointer' : ''}`}
+      onClick={onOpen}
+      role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onKeyDown={(event) => {
+        if (!onOpen) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onOpen()
+        }
+      }}
+    >
+      <div className="relative aspect-[4/5] overflow-hidden bg-zinc-100">
+        <img
           src={artwork.image_url}
           alt={artwork.title}
-          fill
-          style={{ objectFit: 'cover' }}
-          sizes="(max-width: 640px) 100vw, 33vw"
+          className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
         />
+        <div className="like-pop absolute left-4 top-4 inline-flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-xs font-bold text-black shadow-lg backdrop-blur">
+          <Heart size={14} className="fill-red-500 text-red-500" />
+          В избранном
+        </div>
       </div>
 
-      <div className="p-3 flex-1 flex flex-col justify-between">
-        <div>
-          <h3 className="text-sm text-gray-500 font-semibold truncate">{artwork.title}</h3>
+      <div className="flex min-h-52 flex-col p-5">
+        <div className="flex-1">
+          <h3 className="line-clamp-2 text-xl font-black tracking-normal">{artwork.title}</h3>
           {artwork.description ? (
-            <p className="text-xs text-gray-500 mt-1 line-clamp-2">{artwork.description}</p>
+            <p className="secondary-copy mt-2 line-clamp-3 text-sm text-zinc-500">{artwork.description}</p>
           ) : null}
+
+          {artwork.tags && artwork.tags.length > 0 && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {artwork.tags.slice(0, 3).map((tag) => (
+                <span key={tag} className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-semibold text-zinc-600">
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
-        <div className="mt-3 flex items-center justify-between">
-          <div className="text-xs text-gray-600">
+        <div className="mt-5 flex items-center justify-between gap-3 border-t border-zinc-100 pt-4">
+          <div className="min-w-0 text-xs font-semibold text-zinc-500">
             {showUser && userLabel ? (
-              <div>Добавил: <strong>{userLabel}</strong></div>
+              <span className="block truncate">Добавил: {userLabel}</span>
             ) : (
-              <div>Автор: <span className="font-medium">{artwork.author_id || '—'}</span></div>
+              <span className="block truncate">{authorLabel}</span>
             )}
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={(e) => { e.stopPropagation(); onToggle?.(); }}
-              className="flex items-center gap-1 text-sm px-2 py-1 rounded-md bg-red-50 text-red-600 select-none"
-              aria-label="toggle favorite"
-              disabled={isToggling}
-            >
-              <Heart size={14} />
-              <span className="sr-only">Toggle favorite</span>
-            </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {onToggle && (
+              <button
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onToggle()
+                }}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-red-50 text-red-600 transition hover:bg-red-100 disabled:opacity-50"
+                aria-label="Переключить избранное"
+                disabled={isToggling}
+              >
+                <Heart size={16} className="fill-current" />
+              </button>
+            )}
 
             {onRemove && favId ? (
               <button
-                onClick={(e) => { e.stopPropagation(); onRemove(favId); }}
-                className="p-2 rounded-md bg-gray-100 hover:bg-gray-200"
-                aria-label="Удалить"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onRemove(favId)
+                }}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-zinc-100 text-zinc-700 transition hover:bg-black hover:text-white disabled:opacity-50"
+                aria-label="Убрать из избранного"
                 disabled={isDeleting}
               >
                 <Trash2 size={16} />
@@ -81,5 +126,5 @@ export default function FavoriteCard({
         </div>
       </div>
     </article>
-  );
+  )
 }

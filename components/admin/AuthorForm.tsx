@@ -76,8 +76,8 @@ export default function AuthorForm({ initial, onDone }: Props) {
 
       if (error) throw error
       onDone()
-    } catch (err: any) {
-      alert('Ошибка: ' + (err.message || JSON.stringify(err)))
+    } catch (err: unknown) {
+      alert('Ошибка: ' + (err instanceof Error ? err.message : JSON.stringify(err)))
     } finally {
       setSaving(false)
     }

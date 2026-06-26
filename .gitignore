@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local project backups
+app.zip
+@"
+
+# Local secrets
+.env
+.env.local
+"@ | Add-Content .gitignore

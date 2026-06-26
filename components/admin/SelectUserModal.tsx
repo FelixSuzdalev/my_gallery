@@ -20,10 +20,6 @@ export default function SelectUserModal({ onClose, onConfirm }: Props) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
-    loadUsers()
-  }, [])
-
   async function loadUsers() {
     setLoading(true)
     const { data, error } = await supabase
@@ -38,6 +34,13 @@ export default function SelectUserModal({ onClose, onConfirm }: Props) {
     }
     setLoading(false)
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadUsers()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   const toggleUser = (id: string) => {
     const newSelected = new Set(selected)
@@ -85,7 +88,7 @@ export default function SelectUserModal({ onClose, onConfirm }: Props) {
                   />
                   {user.avatar_url ? (
 					<>
-                    	<img src={user.avatar_url} className="w-8 h-8 object-cover rounded-full" />
+                    	<img src={user.avatar_url} alt={user.full_name ?? user.username ?? ''} className="w-8 h-8 object-cover rounded-full" />
 					</>
                   ) : (
                     <div className="w-8 h-8 bg-gray-200 rounded-full" />
