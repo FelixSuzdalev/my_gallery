@@ -7,7 +7,6 @@ import { Loader2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { getCurrentProfile, type CurrentProfile } from '@/lib/current-profile'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
-import { useDevRolePreview } from '@/lib/dev-role-preview'
 import ProfileEditor from '@/components/ProfileEditor'
 import CreatorApplicationPanel from '@/components/CreatorApplicationPanel'
 import { V2CollectionManager } from '@/components/V2Collections'
@@ -18,7 +17,6 @@ export default function MyProfilePage() {
   const [profile, setProfile] = useState<CurrentProfile | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const { effectiveRole } = useDevRolePreview(isSupabaseV2 ? profile?.role ?? null : null)
 
   useEffect(() => {
     if (!isSupabaseV2) return
@@ -67,10 +65,12 @@ export default function MyProfilePage() {
     const timer = window.setTimeout(() => {
       void openCurrentProfile()
     }, 0)
+    window.addEventListener('profile:updated', openCurrentProfile)
 
     return () => {
       mounted = false
       window.clearTimeout(timer)
+      window.removeEventListener('profile:updated', openCurrentProfile)
     }
   }, [router])
 
@@ -95,7 +95,7 @@ export default function MyProfilePage() {
     )
   }
 
-  const displayRole = isSupabaseV2 ? effectiveRole ?? profile.role : profile.role
+  const displayRole = profile.role
   const canApplyForCreator = displayRole !== 'creator' && displayRole !== 'admin'
 
   return (
@@ -148,6 +148,16 @@ export default function MyProfilePage() {
               Открыть профиль
             </Link>
           </section>
+
+          {(displayRole === 'creator' || displayRole === 'admin') && (
+            <section className="rounded-[28px] border border-zinc-200 bg-black p-5 text-white">
+              <p className="text-sm font-semibold text-zinc-400">Студия автора</p>
+              <h2 className="mt-1 text-xl font-black">Опубликовать новую работу</h2>
+              <Link href="/studio" className="mt-5 inline-flex rounded-full bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-zinc-200">
+                Опубликовать работу
+              </Link>
+            </section>
+          )}
 
           {canApplyForCreator && <CreatorApplicationPanel profileId={profile.id} />}
         </div>

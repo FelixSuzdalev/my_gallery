@@ -7,7 +7,6 @@ import { Loader2, LogOut } from 'lucide-react'
 import { usePathname, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { getCurrentProfile, type CurrentProfile } from '@/lib/current-profile'
-import { useDevRolePreview } from '@/lib/dev-role-preview'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
 
 const NAV_ITEMS = [
@@ -140,10 +139,9 @@ export default function Navbar() {
     (typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name : null)
   const displayName = fullName || user?.email?.split('@')[0]
   const initials = (displayName || user?.email || 'U').slice(0, 2).toUpperCase()
-  const { effectiveRole, previewRole } = useDevRolePreview(role)
-  const displayRole = isSupabaseV2 ? effectiveRole : role
+  const displayRole = role
   const isAdmin = displayRole === 'admin'
-  const isPreviewingRole = isSupabaseV2 && process.env.NODE_ENV === 'development' && previewRole !== 'real'
+  const canOpenStudio = isSupabaseV2 && (displayRole === 'creator' || displayRole === 'admin')
 
   return (
     <nav className="sticky top-0 z-50 flex w-full justify-center px-4 py-5">
@@ -168,6 +166,17 @@ export default function Navbar() {
             )
           })}
 
+          {canOpenStudio && (
+            <Link
+              href="/studio"
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-bold ${
+                pathname === '/studio' || pathname?.startsWith('/studio/') ? 'bg-black text-white' : 'text-slate-800'
+              }`}
+            >
+              Студия
+            </Link>
+          )}
+
           {isAdmin && (
             <Link
               href="/admin"
@@ -175,7 +184,7 @@ export default function Navbar() {
                 pathname === '/admin' || pathname?.startsWith('/admin/') ? 'bg-black text-white' : 'text-slate-800'
               }`}
             >
-              {isPreviewingRole ? 'Админ preview' : 'Админ'}
+              Админ
             </Link>
           )}
         </div>

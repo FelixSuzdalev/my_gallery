@@ -48,8 +48,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     }
 
     checkAccess()
+    window.addEventListener('profile:updated', checkAccess)
     return () => {
       mounted = false
+      window.removeEventListener('profile:updated', checkAccess)
     }
   }, [router])
 

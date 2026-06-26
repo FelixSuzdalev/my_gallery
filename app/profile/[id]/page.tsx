@@ -10,7 +10,6 @@ import ProfileEditor from '@/components/ProfileEditor'
 import CreatorApplicationPanel from '@/components/CreatorApplicationPanel'
 import { PublicCollectionsBlock, V2CollectionManager } from '@/components/V2Collections'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
-import { useDevRolePreview } from '@/lib/dev-role-preview'
 import {
   createOwnAction,
   deleteOwnAction,
@@ -84,7 +83,6 @@ export default function PublicProfilePage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [editOpen, setEditOpen] = useState(false)
-  const { effectiveRole } = useDevRolePreview(isSupabaseV2 ? profile?.role ?? null : null)
 
   const applyStatsUpdate = useCallback((artworkId: string, nextStats: ArtworkStatsCounts) => {
     setStats((state) => ({ ...state, [artworkId]: nextStats }))
@@ -242,7 +240,11 @@ export default function PublicProfilePage() {
     const timer = window.setTimeout(() => {
       void loadProfile()
     }, 0)
-    return () => window.clearTimeout(timer)
+    window.addEventListener('profile:updated', loadProfile)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('profile:updated', loadProfile)
+    }
   }, [loadProfile])
 
   const totalLikes = useMemo(() => {
@@ -250,7 +252,7 @@ export default function PublicProfilePage() {
     return Object.values(counts).reduce((sum, count) => sum + count, 0)
   }, [counts, stats])
 
-  const displayRole = isSupabaseV2 ? effectiveRole ?? profile?.role ?? null : profile?.role ?? null
+  const displayRole = profile?.role ?? null
   const isOwner = Boolean(currentUserId && profile?.id === currentUserId)
   const canShowFollow = Boolean(isSupabaseV2 && currentUserId && profile && !isOwner && profile.is_public !== false && !profile.deleted_at)
   const canShowCreatorApplication = Boolean(
@@ -462,6 +464,11 @@ export default function PublicProfilePage() {
                     <Edit3 size={16} />
                     Редактировать профиль
                   </button>
+                )}
+                {isOwner && isSupabaseV2 && (displayRole === 'creator' || displayRole === 'admin') && (
+                  <Link href="/studio" className="inline-flex items-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-bold text-black transition hover:bg-zinc-200">
+                    Открыть студию
+                  </Link>
                 )}
               </div>
             </div>

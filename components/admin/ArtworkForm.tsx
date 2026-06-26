@@ -28,6 +28,9 @@ type Props = {
     comments_enabled?: boolean
   }
   onDone?: () => void | Promise<void>
+  selfAuthorId?: string
+  selfAuthorLabel?: string
+  selfPublishMode?: boolean
 }
 
 type AuthorOption = {
@@ -65,13 +68,13 @@ const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const fieldClass =
   'w-full rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-950 outline-none transition placeholder:text-zinc-400 focus:border-black focus:ring-4 focus:ring-black/5 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-500'
 
-export default function ArtworkForm({ initial, onDone }: Props) {
+export default function ArtworkForm({ initial, onDone, selfAuthorId, selfAuthorLabel, selfPublishMode = false }: Props) {
   const [title, setTitle] = useState(initial?.title ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
   const [imageUrl, setImageUrl] = useState(initial?.image_url ?? '')
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
-  const [authorId, setAuthorId] = useState(initial?.author_id ?? '')
+  const [authorId, setAuthorId] = useState(initial?.author_id ?? selfAuthorId ?? '')
   const [tagsText, setTagsText] = useState((initial?.tags ?? []).join(', '))
   const [selectedTags, setSelectedTags] = useState<string[]>(() => normalizeTagList(initial?.tags ?? []))
   const [status, setStatus] = useState<ArtworkStatus>(initial?.status ?? 'published')
@@ -89,9 +92,17 @@ export default function ArtworkForm({ initial, onDone }: Props) {
 
   const isEditing = Boolean(initial?.id)
   const isV2Editing = isSupabaseV2 && isEditing
-  const canUploadNewImage = !isSupabaseV2 || canUseArtworkMedia({ status, visibility })
+  const isSelfPublishMode = Boolean(isSupabaseV2 && selfPublishMode && selfAuthorId)
+  const effectiveStatus = isSelfPublishMode ? 'published' : status
+  const effectiveVisibility = isSelfPublishMode ? 'public' : visibility
+  const canUploadNewImage = !isSupabaseV2 || canUseArtworkMedia({ status: effectiveStatus, visibility: effectiveVisibility })
   const hasExistingImage = Boolean(imageUrl) || hasPrimaryMedia
   const hasPublishableImage = Boolean(imageUrl) && hasPrimaryMedia
+
+  useEffect(() => {
+    if (!isSelfPublishMode || !selfAuthorId) return
+    setAuthorId(selfAuthorId)
+  }, [isSelfPublishMode, selfAuthorId])
 
   useEffect(() => {
     if (isSupabaseV2) return
@@ -280,7 +291,7 @@ export default function ArtworkForm({ initial, onDone }: Props) {
     const payload: ArtworkPayload = {
       title: title.trim(),
       description: description.trim() || null,
-      author_id: authorId || null,
+      author_id: isSelfPublishMode ? selfAuthorId ?? null : authorId || null,
       tags,
     }
 
@@ -288,9 +299,9 @@ export default function ArtworkForm({ initial, onDone }: Props) {
       if (isSupabaseV2) {
         const v2Payload: ArtworkPayload = {
           ...payload,
-          status,
-          visibility,
-          comments_enabled: commentsEnabled,
+          status: isSelfPublishMode ? 'published' : status,
+          visibility: isSelfPublishMode ? 'public' : visibility,
+          comments_enabled: isSelfPublishMode ? true : commentsEnabled,
         }
 
         const validationError = validateV2Submission(v2Payload, imageFile, isEditing)
@@ -362,14 +373,14 @@ export default function ArtworkForm({ initial, onDone }: Props) {
           >
             {isSupabaseV2 ? (
               <div className="space-y-3">
-                {currentAuthor && (
+                {(currentAuthor || isSelfPublishMode) && (
                   <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-3">
-                    <div className="text-sm font-semibold text-zinc-900">{getAuthorLabel(currentAuthor)}</div>
-                    <div className="text-xs text-zinc-500">Текущий автор · {currentAuthor.role ?? 'role не задана'}</div>
+                    <div className="text-sm font-semibold text-zinc-900">{currentAuthor ? getAuthorLabel(currentAuthor) : selfAuthorLabel ?? 'Текущий автор'}</div>
+                    <div className="text-xs text-zinc-500">Текущий автор · {currentAuthor?.role ?? 'role не задана'}</div>
                   </div>
                 )}
 
-                {!isV2Editing && (
+                {!isV2Editing && !isSelfPublishMode && (
                   <>
                     <input
                       type="search"
@@ -435,7 +446,7 @@ export default function ArtworkForm({ initial, onDone }: Props) {
             )}
           </Field>
 
-          {isSupabaseV2 && (
+          {isSupabaseV2 && !isSelfPublishMode && (
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Статус">
                 <select value={status} onChange={(event) => setStatus(event.target.value as ArtworkStatus)} className={fieldClass}>
@@ -875,3 +886,4 @@ function Field({
     </label>
   )
 }
+

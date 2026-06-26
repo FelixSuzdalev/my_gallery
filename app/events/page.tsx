@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ArrowUpRight, Calendar, Edit3, Loader2, MapPin, Plus, Save, Search, SlidersHorizontal, Trash2, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { isSupabaseV2 } from '@/lib/supabase-schema-version'
-import { useDevRolePreview } from '@/lib/dev-role-preview'
 
 type EventStatus = 'active' | 'upcoming' | 'past'
 type EventFilter = 'all' | 'active' | 'upcoming'
@@ -137,8 +136,7 @@ export default function EventsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
-  const { effectiveRole } = useDevRolePreview(isSupabaseV2 && isAdmin ? 'admin' : null)
-  const canShowAdminPanel = isSupabaseV2 ? effectiveRole === 'admin' : isAdmin
+  const canShowAdminPanel = isAdmin
 
   const refreshPublicEvents = useCallback(async () => {
     const rawEvents = await loadPublicEvents()
@@ -196,10 +194,12 @@ export default function EventsPage() {
     const timer = window.setTimeout(() => {
       void checkAdmin()
     }, 0)
+    window.addEventListener('profile:updated', checkAdmin)
 
     return () => {
       mounted = false
       window.clearTimeout(timer)
+      window.removeEventListener('profile:updated', checkAdmin)
     }
   }, [])
 
